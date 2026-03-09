@@ -1,12 +1,10 @@
 """
 strategy.py — 量化交易策略
 
-改进说明：
-- 基于R86配置（val_score=2.1159），将做空仓位从50%提升到60%
-- 扩大做空出场窗口从28到32，延长空头持仓时间
-- 保持Keltner 2.5x宽通道 + EMA150熊市检测 + ADX>25 + 成交量1.1x确认
-
-预期：更重的做空仓位 + 更长的持仓时间 → 捕捉更大下跌趋势
+基于R86配置( val_score=2.1159)改进:
+- 做空仓位从50%提升到55%，增加空头盈利能力
+- 出场窗口从36扩大到40，延长空头持仓时间捕捉更大下跌趋势
+- 保持Keltner 2.5x + EMA150熊市检测 + 成交量1.1x确认
 """
 
 import pandas as pd
@@ -33,17 +31,6 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
     keltner_upper = ema50 + 2.5 * atr
     keltner_lower = ema50 - 2.5 * atr
 
-    # ── ADX 趋势强度指标 ──
-    up_move = high.diff()
-    down_move = -low.diff()
-    plus_dm = np.where((up_move > down_move) & (up_move > 0), up_move, 0)
-    minus_dm = np.where((down_move > up_move) & (down_move > 0), down_move, 0)
-    atr14 = tr.rolling(14).mean()
-    plus_di = pd.Series(plus_dm, index=candles.index).rolling(14).mean() / atr14 * 100
-    minus_di = pd.Series(minus_dm, index=candles.index).rolling(14).mean() / atr14 * 100
-    dx = (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, 1) * 100
-    adx = dx.rolling(14).mean()
-
     # ── 做多系统（始终运行，25% 仓位） ──
     entry_high = high.rolling(58).max()
     exit_low = low.rolling(28).min()
@@ -64,10 +51,10 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
             else:
                 long_signal.iloc[i] = 0.25
 
-    # ── 做空系统（EMA斜率熊市 + ADX强趋势，60% 仓位） ──
+    # ── 做空系统（EMA斜率熊市 + 成交量确认，55% 仓位） ──
     ema150 = close.ewm(span=150, adjust=False).mean()
     ema150_slope = ema150 / ema150.shift(96) - 1
-    exit_high = high.rolling(32).max()  # 出场窗口从36→32
+    exit_high = high.rolling(40).max()  # 从36扩大到40
 
     short_signal = pd.Series(0.0, index=candles.index)
     in_short = False
@@ -77,19 +64,17 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
         if np.isnan(slope):
             slope = 0.0
         bear_confirmed = close.iloc[i] < ema150.iloc[i] and slope < -0.05
-        adx_strong = adx.iloc[i] > 25 if not np.isnan(adx.iloc[i]) else False
 
         if not in_short:
             if (bear_confirmed
-                    and adx_strong
                     and close.iloc[i] < keltner_lower.iloc[i]
                     and volume.iloc[i] > 1.1 * vol_ma.iloc[i]):
                 in_short = True
-                short_signal.iloc[i] = -0.60  # 从-0.50提升到-0.60
+                short_signal.iloc[i] = -0.55  # 从-0.50提升到-0.55
         else:
             if close.iloc[i] > exit_high.iloc[i - 1]:
                 in_short = False
             else:
-                short_signal.iloc[i] = -0.60
+                short_signal.iloc[i] = -0.55
 
     return (long_signal + short_signal).clip(-1.0, 1.0)
