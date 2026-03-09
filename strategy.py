@@ -1,10 +1,11 @@
 """
 strategy.py — 量化交易策略
 
-基于 R134（val_score=2.3833）的改进：
-- 做空仓位从 70% 提升到 80%（历史证明高做空仓位更有效，如R75=2.3323）
-- 新增 RSI(14) 作为动量过滤：做多时 RSI<70（不追极端），做空时 RSI>30
-- 保持：波动率自适应仓位 + EMA150 熊市检测 + ADX>25 + Keltner 2.5x + 成交量 1.1x
+基于R86（val_score=2.1159）的改进：
+- 新增波动率自适应仓位：根据ATR/价格比率动态调整仓位
+- 当市场波动高于历史均值时降仓，低时加仓
+- 保持：EMA150熊市检测 + ADX>25 + Keltner 2.5x + 成交量1.1x
+- 做空70%仓位 + 36出场保持不变
 """
 
 import pandas as pd
@@ -42,21 +43,16 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
     dx = (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, 1) * 100
     adx = dx.rolling(14).mean()
 
-    # ── RSI 动量指标 ──
-    delta = close.diff()
-    gain = delta.where(delta > 0, 0).rolling(14).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
-    rs = gain / loss.replace(0, 1e-10)
-    rsi = 100 - (100 / (1 + rs))
-
     # ── 波动率自适应仓位 ──
-    atr_pct = atr / close
-    vol_regime = atr_pct.rolling(50).mean()
-    vol_ratio = atr_pct / vol_regime
+    atr_pct = atr / close  # 相对波动率
+    vol_regime = atr_pct.rolling(50).mean()  # 历史平均波动率
+    vol_ratio = atr_pct / vol_regime  # 当前/历史波动率比
+    
+    # 波动率高时降仓，低时加仓，范围[0.5, 1.2]
     vol_mult = np.clip(1.0 / vol_ratio, 0.5, 1.2)
     vol_mult = vol_mult.fillna(1.0)
 
-    # ── 做多系统（25% 仓位 × 波动系数） ──
+    # ── 做多系统（始终运行，25% 仓位 × 波动系数） ──
     entry_high = high.rolling(58).max()
     exit_low = low.rolling(28).min()
 
@@ -67,8 +63,7 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
         if not in_long:
             if (close.iloc[i] > entry_high.iloc[i - 1]
                     and close.iloc[i] > keltner_upper.iloc[i]
-                    and volume.iloc[i] > 1.1 * vol_ma.iloc[i]
-                    and rsi.iloc[i] < 70):  # RSI过滤：避免极端追高
+                    and volume.iloc[i] > 1.1 * vol_ma.iloc[i]):
                 in_long = True
                 long_signal.iloc[i] = 0.25 * vol_mult.iloc[i]
         else:
@@ -77,7 +72,7 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
             else:
                 long_signal.iloc[i] = 0.25 * vol_mult.iloc[i]
 
-    # ── 做空系统（80% 仓位 × 波动系数） ──
+    # ── 做空系统（EMA斜率熊市 + ADX强趋势，70% 仓位 × 波动系数） ──
     ema150 = close.ewm(span=150, adjust=False).mean()
     ema150_slope = ema150 / ema150.shift(96) - 1
     exit_high = high.rolling(36).max()
@@ -96,14 +91,13 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
             if (bear_confirmed
                     and adx_strong
                     and close.iloc[i] < keltner_lower.iloc[i]
-                    and volume.iloc[i] > 1.1 * vol_ma.iloc[i]
-                    and rsi.iloc[i] > 30):  # RSI过滤：避免极端追空
+                    and volume.iloc[i] > 1.1 * vol_ma.iloc[i]):
                 in_short = True
-                short_signal.iloc[i] = -0.80 * vol_mult.iloc[i]  # 80%仓位
+                short_signal.iloc[i] = -0.70 * vol_mult.iloc[i]
         else:
             if close.iloc[i] > exit_high.iloc[i - 1]:
                 in_short = False
             else:
-                short_signal.iloc[i] = -0.80 * vol_mult.iloc[i]
+                short_signal.iloc[i] = -0.70 * vol_mult.iloc[i]
 
     return (long_signal + short_signal).clip(-1.0, 1.0)
