@@ -1,13 +1,11 @@
 """
-改进策略：调整做空系统的Keltner通道系数至2.8x
+改进策略：扩大波动率自适应仓位上限到1.8
 
-基于R224(val_score=3.2788)的改进：
-1. R224在R211基础上调整了波动率自适应仓位的上下限，取得了较好效果
-2. 观察R211-R224的演进：R211使用做空Keltner系数2.5x，R204使用3.0x（做多）和2.5x（做空）
-3. R224保持了R211的参数配置，但波动率范围调整可能改变了信号质量
-4. 做空系统的Keltner系数2.5x相对严格，可能过滤掉了一些有效的做空信号
-5. 建议：将做空Keltner系数从2.5x微调至2.8x，适当放宽做空入场条件
-6. 预期：在保持风险控制的同时，捕捉更多做空机会，提高策略整体表现
+基于R225(val_score=3.3204)的改进：
+1. R225保持R224的波动率范围[0.3, 1.5]，这是R224取得突破的关键
+2. 思路：在高波动期（如大幅下跌时），趋势往往更剧烈，适当放大仓位可以增强收益
+3. 改动：将波动率上限从1.5提高到1.8，给予高波动期更大的仓位敞口
+4. 预期：在保持风险控制的同时，增强对强趋势行情的捕捉能力
 """
 
 import pandas as pd
@@ -32,9 +30,9 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
     atr14 = tr.rolling(14).mean()
     vol_ma = volume.rolling(50).mean()
 
-    # Keltner通道：做多使用3.0x，做空使用2.8x（改进点）
+    # Keltner通道：做多使用3.0x，做空使用2.8x
     keltner_upper = ema50 + 3.0 * atr
-    keltner_lower_tight = ema50 - 2.8 * atr  # 做空从2.5x调整到2.8x
+    keltner_lower_tight = ema50 - 2.8 * atr
 
     # ── ADX 趋势强度指标 ──
     up_move = high.diff()
@@ -46,11 +44,11 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
     dx = (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, 1) * 100
     adx = dx.rolling(14).mean()
 
-    # ── 波动率自适应仓位（R224改进：范围[0.3, 1.5]）──
+    # ── 波动率自适应仓位（改进：从[0.3, 1.5]扩大到[0.3, 1.8]）──
     atr_pct = atr / close
     vol_regime = atr_pct.rolling(50).mean()
     vol_ratio = atr_pct / vol_regime
-    vol_mult = np.clip(1.0 / vol_ratio, 0.3, 1.5).fillna(1.0)
+    vol_mult = np.clip(1.0 / vol_ratio, 0.3, 1.8).fillna(1.0)
 
     # ── 做多系统（30% 仓位 × 波动系数，ADX>25过滤）──
     entry_high = high.rolling(58).max()
@@ -96,7 +94,7 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
         if not in_short:
             if (bear_confirmed
                     and adx_strong
-                    and close.iloc[i] < keltner_lower_tight.iloc[i]  # 使用2.8x
+                    and close.iloc[i] < keltner_lower_tight.iloc[i]
                     and volume.iloc[i] > 1.1 * vol_ma.iloc[i]):
                 in_short = True
                 entry_price = close.iloc[i]
