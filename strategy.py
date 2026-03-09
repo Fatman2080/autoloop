@@ -2,9 +2,8 @@
 strategy.py — 量化交易策略
 
 基于R138改进（val_score=2.0595）：
-- 调整ATR周期：14 → 20（使用更长周期的ATR使出场信号更稳定，减少假突破）
-- 保持做空ATR动态出场：2.8×ATR
-- 保持做空仓位：60%
+- 调整做空ATR动态出场：2.5×ATR → 2.8×ATR，更宽的ATR出场让利润奔跑
+- 调整做空仓位：70% → 60%（减少过重做空风险）
 - 保持：EMA150熊市检测 + ADX>25 + Keltner 2.5x + 成交量1.1x + 波动率自适应
 """
 
@@ -27,7 +26,7 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
         (low - prev_close).abs(),
     ], axis=1).max(axis=1)
     atr = tr.rolling(50).mean()
-    atr20 = tr.rolling(20).mean()  # 改用20周期ATR
+    atr14 = tr.rolling(14).mean()
     vol_ma = volume.rolling(50).mean()
 
     keltner_upper = ema50 + 2.5 * atr
@@ -38,8 +37,8 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
     down_move = -low.diff()
     plus_dm = np.where((up_move > down_move) & (up_move > 0), up_move, 0)
     minus_dm = np.where((down_move > up_move) & (down_move > 0), down_move, 0)
-    plus_di = pd.Series(plus_dm, index=candles.index).rolling(14).mean() / atr20 * 100
-    minus_di = pd.Series(minus_dm, index=candles.index).rolling(14).mean() / atr20 * 100
+    plus_di = pd.Series(plus_dm, index=candles.index).rolling(14).mean() / atr14 * 100
+    minus_di = pd.Series(minus_dm, index=candles.index).rolling(14).mean() / atr14 * 100
     dx = (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, 1) * 100
     adx = dx.rolling(14).mean()
 
@@ -73,8 +72,8 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
     ema150 = close.ewm(span=150, adjust=False).mean()
     ema150_slope = ema150 / ema150.shift(96) - 1
     
-    # ATR动态出场：2.8×ATR
-    atr_exit = atr20 * 2.8
+    # ATR动态出场：2.8×ATR，让利润更奔跑
+    atr_exit = atr14 * 2.8
 
     short_signal = pd.Series(0.0, index=candles.index)
     in_short = False
@@ -96,6 +95,7 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
                 entry_price = close.iloc[i]
                 short_signal.iloc[i] = -0.60 * vol_mult.iloc[i]
         else:
+            # ATR动态出场：价格突破入场价+2.8倍ATR时退出
             if close.iloc[i] > entry_price + atr_exit.iloc[i]:
                 in_short = False
             else:
