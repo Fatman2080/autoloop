@@ -1,19 +1,6 @@
 """
-strategy.py — 改进策略
-
-改动说明：
-- 基于R20最佳策略（R19+做空ADX>25趋势过滤，val_score=1.870）
-- 尝试R29的方法：使用更激进的做空条件以获得更高收益
-- 关键改动：
-  1. 缩短做空出场周期（36→24），提高资金利用率
-  2. 降低做空ADX阈值（25→20），增加做空机会
-  3. 调整仓位：做多25%不变，做空从40%提升到50%
-  4. 收紧熊市检测：EMA150斜率阈值从-5%降到-3%
-
-预期效果：
-- 更多的做空交易机会
-- 更短的持仓周期降低回撤风险
-- 整体收益提升
+strategy.py — AI 唯一修改的文件
+实现交易策略，输出仓位信号。
 """
 
 import pandas as pd
@@ -21,6 +8,30 @@ import numpy as np
 
 
 def generate_signals(candles: pd.DataFrame) -> pd.Series:
+    """
+    输入：K线数据 DataFrame，包含列：
+        价格数据：timestamp, open, high, low, close, volume
+        衍生品数据：funding_rate, open_interest,
+                    liq_long_usd, liq_short_usd, liq_total_usd,
+                    long_short_ratio
+
+    输出：仓位信号 Series，值在 -1.0 ~ 1.0 之间
+        - -1.0 = 满仓做空
+        -  0.0 = 空仓
+        -  1.0 = 满仓做多
+
+    规则：
+        - 只能使用当前及之前的 K 线数据（禁止未来数据）
+        - 可以使用任何技术指标、数学方法、模式识别
+        - 只允许 import pandas 和 numpy
+
+    策略：独立叠加多空系统 + EMA 斜率熊市检测 + ADX 趋势强度 (R20)
+    - 做多系统（始终运行）：Donchian(58h) + Keltner上轨(2.0x) + 成交量 → 25%
+    - 做空系统（仅熊市+强趋势）：Keltner下轨(2.0x) + 成交量 + 熊市确认 + ADX>25 → 40%
+    - 熊市判定：价格 < EMA(150) 且 EMA(150) 96h内下跌 > 5%
+    - ADX>25 过滤弱趋势做空，减少震荡市亏损交易
+    - 两系统信号独立叠加，互不干扰
+    """
     close = candles["close"]
     high = candles["high"]
     low = candles["low"]
@@ -71,11 +82,10 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
             else:
                 long_signal.iloc[i] = 0.25
 
-    # ── 做空系统（收紧条件，50% 仓位） ──
+    # ── 做空系统（仅在 EMA斜率熊市 + ADX强趋势 中激活，40% 仓位） ──
     ema150 = close.ewm(span=150, adjust=False).mean()
     ema150_slope = ema150 / ema150.shift(96) - 1
-    # 缩短出场周期：36→24
-    exit_high = high.rolling(24).max()
+    exit_high = high.rolling(36).max()
 
     short_signal = pd.Series(0.0, index=candles.index)
     in_short = False
@@ -84,10 +94,8 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
         slope = ema150_slope.iloc[i]
         if np.isnan(slope):
             slope = 0.0
-        # 收紧熊市检测：-5% → -3%
-        bear_confirmed = close.iloc[i] < ema150.iloc[i] and slope < -0.03
-        # 降低ADX阈值：25 → 20
-        adx_strong = adx.iloc[i] > 20 if not np.isnan(adx.iloc[i]) else False
+        bear_confirmed = close.iloc[i] < ema150.iloc[i] and slope < -0.05
+        adx_strong = adx.iloc[i] > 25 if not np.isnan(adx.iloc[i]) else False
 
         if not in_short:
             if (bear_confirmed
@@ -95,11 +103,11 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
                     and close.iloc[i] < keltner_lower.iloc[i]
                     and volume.iloc[i] > 1.1 * vol_ma.iloc[i]):
                 in_short = True
-                short_signal.iloc[i] = -0.5  # 提升做空仓位：40%→50%
+                short_signal.iloc[i] = -0.4
         else:
             if close.iloc[i] > exit_high.iloc[i - 1]:
                 in_short = False
             else:
-                short_signal.iloc[i] = -0.5
+                short_signal.iloc[i] = -0.4
 
     return (long_signal + short_signal).clip(-1.0, 1.0)
