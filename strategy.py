@@ -2,11 +2,11 @@
 strategy.py — 量化交易策略
 
 改进说明（基于R86 val_score=2.1159）：
-- 仓位调整为 L25%/S40%，平衡多空以提高稳定性
-- 出场窗口从36缩小到32，提高交易频率
-- EMA150斜率阈值从-0.05放宽到-0.04，捕捉更多趋势
+- 做空仓位从60%提升到70%，更偏重做空策略
+- 出场窗口从32调整为36，延长空头持仓时间以捕捉更大下跌
+- 保持Keltner 2.5x + EMA150熊市检测 + ADX>25 + 成交量1.1x确认
 
-预期：更平衡的仓位 + 更短的持仓周期 → 提升Sharpe
+预期：更重的做空仓位 + 更长的持仓时间 → 提升做空收益
 """
 
 import pandas as pd
@@ -33,7 +33,7 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
     keltner_upper = ema50 + 2.5 * atr
     keltner_lower = ema50 - 2.5 * atr
 
-    # ── ADX 趋势强度 ──
+    # ── ADX 趋势强度指标 ──
     up_move = high.diff()
     down_move = -low.diff()
     plus_dm = np.where((up_move > down_move) & (up_move > 0), up_move, 0)
@@ -44,7 +44,7 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
     dx = (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, 1) * 100
     adx = dx.rolling(14).mean()
 
-    # ── 做多系统（25% 仓位） ──
+    # ── 做多系统（始终运行，25% 仓位） ──
     entry_high = high.rolling(58).max()
     exit_low = low.rolling(28).min()
 
@@ -64,10 +64,10 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
             else:
                 long_signal.iloc[i] = 0.25
 
-    # ── 做空系统（40% 仓位） ──
+    # ── 做空系统（EMA斜率熊市 + ADX强趋势，70% 仓位） ──
     ema150 = close.ewm(span=150, adjust=False).mean()
     ema150_slope = ema150 / ema150.shift(96) - 1
-    exit_high = high.rolling(32).max()
+    exit_high = high.rolling(36).max()  # 从32调整为36，延长持仓时间
 
     short_signal = pd.Series(0.0, index=candles.index)
     in_short = False
@@ -76,7 +76,7 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
         slope = ema150_slope.iloc[i]
         if np.isnan(slope):
             slope = 0.0
-        bear_confirmed = close.iloc[i] < ema150.iloc[i] and slope < -0.04
+        bear_confirmed = close.iloc[i] < ema150.iloc[i] and slope < -0.05
         adx_strong = adx.iloc[i] > 25 if not np.isnan(adx.iloc[i]) else False
 
         if not in_short:
@@ -85,11 +85,11 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
                     and close.iloc[i] < keltner_lower.iloc[i]
                     and volume.iloc[i] > 1.1 * vol_ma.iloc[i]):
                 in_short = True
-                short_signal.iloc[i] = -0.40
+                short_signal.iloc[i] = -0.70  # 从-0.60提升到-0.70
         else:
             if close.iloc[i] > exit_high.iloc[i - 1]:
                 in_short = False
             else:
-                short_signal.iloc[i] = -0.40
+                short_signal.iloc[i] = -0.70
 
     return (long_signal + short_signal).clip(-1.0, 1.0)
