@@ -2,12 +2,11 @@
 strategy.py — 量化交易策略
 
 改进说明（基于R86 val_score=2.1159）：
-- 降低ADX阈值从25→22：降低趋势强度要求，增加做空信号
-- Keltner倍数从2.5x→2.3x：收窄通道，更容易触发做空
-- 保持做空仓位70% + 出场窗口36
+- 做空仓位从60%提升到70%，更偏重做空策略
+- 出场窗口从32调整为36，延长空头持仓时间以捕捉更大下跌
+- 保持Keltner 2.5x + EMA150熊市检测 + ADX>25 + 成交量1.1x确认
 
-改动理由：R86已经验证了做空策略框架有效，
-通过降低ADX和Keltner阈值来增加做空信号频率
+预期：更重的做空仓位 + 更长的持仓时间 → 提升做空收益
 """
 
 import pandas as pd
@@ -31,8 +30,8 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
     atr = tr.rolling(50).mean()
     vol_ma = volume.rolling(50).mean()
 
-    keltner_upper = ema50 + 2.3 * atr
-    keltner_lower = ema50 - 2.3 * atr
+    keltner_upper = ema50 + 2.5 * atr
+    keltner_lower = ema50 - 2.5 * atr
 
     # ── ADX 趋势强度指标 ──
     up_move = high.diff()
@@ -68,7 +67,7 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
     # ── 做空系统（EMA斜率熊市 + ADX强趋势，70% 仓位） ──
     ema150 = close.ewm(span=150, adjust=False).mean()
     ema150_slope = ema150 / ema150.shift(96) - 1
-    exit_high = high.rolling(36).max()
+    exit_high = high.rolling(36).max()  # 从32调整为36，延长持仓时间
 
     short_signal = pd.Series(0.0, index=candles.index)
     in_short = False
@@ -78,7 +77,7 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
         if np.isnan(slope):
             slope = 0.0
         bear_confirmed = close.iloc[i] < ema150.iloc[i] and slope < -0.05
-        adx_strong = adx.iloc[i] > 22 if not np.isnan(adx.iloc[i]) else False
+        adx_strong = adx.iloc[i] > 25 if not np.isnan(adx.iloc[i]) else False
 
         if not in_short:
             if (bear_confirmed
@@ -86,7 +85,7 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
                     and close.iloc[i] < keltner_lower.iloc[i]
                     and volume.iloc[i] > 1.1 * vol_ma.iloc[i]):
                 in_short = True
-                short_signal.iloc[i] = -0.70
+                short_signal.iloc[i] = -0.70  # 从-0.60提升到-0.70
         else:
             if close.iloc[i] > exit_high.iloc[i - 1]:
                 in_short = False
