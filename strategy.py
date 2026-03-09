@@ -1,9 +1,9 @@
 """
 strategy.py — 量化交易策略
 
-基于R155改进（val_score=2.5709）：
-- ATR动态出场从2.8x提升到3.0x，更宽的出场让利润奔跑
-- 加入移动止盈：当盈利超过3%时，将止损移至盈亏平衡点
+基于R138改进（val_score=2.0595）：
+- 调整做空ATR动态出场：2.5×ATR → 2.8×ATR，更宽的ATR出场让利润奔跑
+- 调整做空仓位：70% → 60%（减少过重做空风险）
 - 保持：EMA150熊市检测 + ADX>25 + Keltner 2.5x + 成交量1.1x + 波动率自适应
 """
 
@@ -68,12 +68,12 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
             else:
                 long_signal.iloc[i] = 0.30 * vol_mult.iloc[i]
 
-    # ── 做空系统（60% 仓位 × 波动系数，ATR动态出场+移动止盈） ──
+    # ── 做空系统（60% 仓位 × 波动系数，ATR动态出场） ──
     ema150 = close.ewm(span=150, adjust=False).mean()
     ema150_slope = ema150 / ema150.shift(96) - 1
     
-    # ATR动态出场：3.0x，更宽的ATR让利润奔跑
-    atr_exit = atr14 * 3.0
+    # ATR动态出场：2.8×ATR，让利润更奔跑
+    atr_exit = atr14 * 2.8
 
     short_signal = pd.Series(0.0, index=candles.index)
     in_short = False
@@ -95,13 +95,8 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
                 entry_price = close.iloc[i]
                 short_signal.iloc[i] = -0.60 * vol_mult.iloc[i]
         else:
-            # 移动止盈：当盈利超过3%时，将止损移至盈亏平衡点
-            profit_pct = (entry_price - close.iloc[i]) / entry_price
-            if profit_pct > 0.03:
-                # 价格已向有利方向变动3%以上，平仓保护利润
-                in_short = False
-            # ATR动态出场：价格突破入场价+3.0倍ATR时退出
-            elif close.iloc[i] > entry_price + atr_exit.iloc[i]:
+            # ATR动态出场：价格突破入场价+2.8倍ATR时退出
+            if close.iloc[i] > entry_price + atr_exit.iloc[i]:
                 in_short = False
             else:
                 short_signal.iloc[i] = -0.60 * vol_mult.iloc[i]
