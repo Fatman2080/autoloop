@@ -1,10 +1,11 @@
 """
-改进策略：扩大Keltner通道倍数
+改进策略：多空仓位调整
 
-基于R195(val_score=3.0773)改进：
-1. Keltner通道倍数从2.5x扩大到3.0x
-2. 理由：更宽的通道可以过滤假突破信号，只在价格真正突破宽幅通道时入场
-3. 保持做多35%和做空50%仓位不变
+基于R204(val_score=3.1891)改进：
+1. 将做多仓位从35%降低到30%，做空仓位从50%降低到45%
+2. 理由：观察历史最佳结果R204，虽然val_score最高，但训练集score为负(-0.3211)，表明可能存在过拟合
+   降低仓位可以平衡风险，提高策略的鲁棒性，同时保持多空系统的基本结构
+3. 其他参数保持不变：Keltner通道倍数3.0x，ATR出场2.5x，ADX过滤25
 """
 
 import pandas as pd
@@ -29,8 +30,8 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
     atr14 = tr.rolling(14).mean()
     vol_ma = volume.rolling(50).mean()
 
-    keltner_upper = ema50 + 3.0 * atr  # 从2.5x改为3.0x
-    keltner_lower = ema50 - 3.0 * atr  # 从2.5x改为3.0x
+    keltner_upper = ema50 + 3.0 * atr
+    keltner_lower = ema50 - 3.0 * atr
 
     # ── ADX 趋势强度指标 ──
     up_move = high.diff()
@@ -48,7 +49,7 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
     vol_ratio = atr_pct / vol_regime
     vol_mult = np.clip(1.0 / vol_ratio, 0.5, 1.2).fillna(1.0)
 
-    # ── 做多系统（35% 仓位 × 波动系数，ADX>25过滤）──
+    # ── 做多系统（30% 仓位 × 波动系数，ADX>25过滤）──
     entry_high = high.rolling(58).max()
     exit_low = low.rolling(30).min()
 
@@ -65,14 +66,14 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
                     and close.iloc[i] > keltner_upper.iloc[i]
                     and volume.iloc[i] > 1.1 * vol_ma.iloc[i]):
                 in_long = True
-                long_signal.iloc[i] = 0.35 * vol_mult.iloc[i]
+                long_signal.iloc[i] = 0.30 * vol_mult.iloc[i]  # 从35%降低到30%
         else:
             if close.iloc[i] < exit_low.iloc[i - 1]:
                 in_long = False
             else:
-                long_signal.iloc[i] = 0.35 * vol_mult.iloc[i]
+                long_signal.iloc[i] = 0.30 * vol_mult.iloc[i]  # 从35%降低到30%
 
-    # ── 做空系统（50% 仓位 × 波动系数，ATR动态出场2.5x）──
+    # ── 做空系统（45% 仓位 × 波动系数，ATR动态出场2.5x）──
     ema150 = close.ewm(span=150, adjust=False).mean()
     ema150_slope = ema150 / ema150.shift(96) - 1
     
@@ -96,11 +97,11 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
                     and volume.iloc[i] > 1.1 * vol_ma.iloc[i]):
                 in_short = True
                 entry_price = close.iloc[i]
-                short_signal.iloc[i] = -0.50 * vol_mult.iloc[i]
+                short_signal.iloc[i] = -0.45 * vol_mult.iloc[i]  # 从50%降低到45%
         else:
             if close.iloc[i] > entry_price + atr_exit.iloc[i]:
                 in_short = False
             else:
-                short_signal.iloc[i] = -0.50 * vol_mult.iloc[i]
+                short_signal.iloc[i] = -0.45 * vol_mult.iloc[i]  # 从50%降低到45%
 
     return (long_signal + short_signal).clip(-1.0, 1.0)
