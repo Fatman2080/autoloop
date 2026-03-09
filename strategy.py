@@ -1,10 +1,10 @@
 """
 strategy.py — 量化交易策略
 
-基于R180改进（val_score=2.5786）：
-- 在ATR动态出场基础上加入时间止损：做空持仓超过48根K线且未触及ATR出场则强制平仓
-- 理由：长期持仓在震荡行情中容易被反复洗出，固定时间退出可保护利润
-- 保持其他参数不变：EMA150熊市检测 + ADX>25 + Keltner 2.5x + 成交量1.1x + 波动率自适应
+基于R138改进（val_score=2.0595）：
+- 调整做空ATR动态出场：2.5×ATR → 2.8×ATR，更宽的ATR出场让利润奔跑
+- 调整做空仓位：70% → 60%（减少过重做空风险）
+- 保持：EMA150熊市检测 + ADX>25 + Keltner 2.5x + 成交量1.1x + 波动率自适应
 """
 
 import pandas as pd
@@ -68,19 +68,16 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
             else:
                 long_signal.iloc[i] = 0.30 * vol_mult.iloc[i]
 
-    # ── 做空系统（60% 仓位 × 波动系数，ATR动态出场+时间止损） ──
+    # ── 做空系统（60% 仓位 × 波动系数，ATR动态出场） ──
     ema150 = close.ewm(span=150, adjust=False).mean()
     ema150_slope = ema150 / ema150.shift(96) - 1
     
-    # ATR动态出场：2.8×ATR，让利润奔跑
+    # ATR动态出场：2.8×ATR，让利润更奔跑
     atr_exit = atr14 * 2.8
-    # 时间止损：持有超过48根K线强制平仓
-    max_hold_bars = 48
 
     short_signal = pd.Series(0.0, index=candles.index)
     in_short = False
     entry_price = 0.0
-    entry_bar = 0
 
     for i in range(150, len(candles)):
         slope = ema150_slope.iloc[i]
@@ -96,12 +93,10 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
                     and volume.iloc[i] > 1.1 * vol_ma.iloc[i]):
                 in_short = True
                 entry_price = close.iloc[i]
-                entry_bar = i
                 short_signal.iloc[i] = -0.60 * vol_mult.iloc[i]
         else:
-            hold_bars = i - entry_bar
-            # ATR动态出场 或 时间止损
-            if close.iloc[i] > entry_price + atr_exit.iloc[i] or hold_bars >= max_hold_bars:
+            # ATR动态出场：价格突破入场价+2.8倍ATR时退出
+            if close.iloc[i] > entry_price + atr_exit.iloc[i]:
                 in_short = False
             else:
                 short_signal.iloc[i] = -0.60 * vol_mult.iloc[i]
