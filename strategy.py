@@ -1,13 +1,11 @@
 """
-改进策略：调整波动率自适应范围到[0.25, 2.0]
+改进策略：做空系统增加部分止盈机制
 
-基于R235(val_score=3.3215)的改进：
-1. R235将波动率上限从1.5扩大到1.8，取得了微小提升(+0.0011)
-2. 观察：波动率自适应机制在极端行情下能更好地控制风险敞口
-3. 改动：继续扩大范围到[0.25, 2.0]，给予极端波动更大的调节空间
-   - 下限从0.3降到0.25：在超高波动时进一步降低仓位
-   - 上限从1.8提高到2.0：在超低波动时进一步放大仓位
-4. 预期：更好地适应BTC的极端波动特性，提升整体夏普比率
+基于R236(val_score=3.331)的改进：
+1. 当前做空系统使用单一ATR 2.5x止损出场
+2. 改进：增加部分止盈——当价格朝有利方向移动2x ATR时，平掉50%仓位
+3. 剩余50%仓位继续持有到ATR止损出场
+4. 预期：既能锁定部分利润，又能保留趋势延续机会
 """
 
 import pandas as pd
@@ -46,7 +44,7 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
     dx = (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, 1) * 100
     adx = dx.rolling(14).mean()
 
-    # ── 波动率自适应仓位（改进：从[0.3, 1.8]扩大到[0.25, 2.0]）──
+    # ── 波动率自适应仓位（从[0.25, 2.0]）──
     atr_pct = atr / close
     vol_regime = atr_pct.rolling(50).mean()
     vol_ratio = atr_pct / vol_regime
@@ -76,15 +74,17 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
             else:
                 long_signal.iloc[i] = 0.30 * vol_mult.iloc[i]
 
-    # ── 做空系统（50% 仓位 × 波动系数，使用2.8x Keltner）──
+    # ── 做空系统（50% 仓位 × 波动系数，增加部分止盈）──
     ema150 = close.ewm(span=150, adjust=False).mean()
     ema150_slope = ema150 / ema150.shift(96) - 1
     
     atr_exit = atr14 * 2.5
+    atr_take_profit = atr14 * 2.0  # 止盈触发：价格有利移动2x ATR
 
     short_signal = pd.Series(0.0, index=candles.index)
     in_short = False
     entry_price = 0.0
+    half_closed = False
 
     for i in range(150, len(candles)):
         slope = ema150_slope.iloc[i]
@@ -100,11 +100,23 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
                     and volume.iloc[i] > 1.1 * vol_ma.iloc[i]):
                 in_short = True
                 entry_price = close.iloc[i]
+                half_closed = False
                 short_signal.iloc[i] = -0.50 * vol_mult.iloc[i]
         else:
-            if close.iloc[i] > entry_price + atr_exit.iloc[i]:
+            # 检查是否触发部分止盈（价格有利移动2x ATR）
+            if not half_closed and close.iloc[i] <= entry_price - atr_take_profit.iloc[i]:
+                # 平掉50%仓位
+                short_signal.iloc[i] = -0.25 * vol_mult.iloc[i]
+                half_closed = True
+            elif close.iloc[i] > entry_price + atr_exit.iloc[i]:
+                # 止损出场
                 in_short = False
+                half_closed = False
             else:
-                short_signal.iloc[i] = -0.50 * vol_mult.iloc[i]
+                # 继续持有剩余仓位
+                if half_closed:
+                    short_signal.iloc[i] = -0.25 * vol_mult.iloc[i]
+                else:
+                    short_signal.iloc[i] = -0.50 * vol_mult.iloc[i]
 
     return (long_signal + short_signal).clip(-1.0, 1.0)
