@@ -1,10 +1,11 @@
 """
 strategy.py — 量化交易策略
 
-基于R138改进（val_score=2.0595）：
-- 调整做空ATR动态出场：2.5×ATR → 2.8×ATR，更宽的ATR出场让利润奔跑
-- 调整做空仓位：70% → 60%（减少过重做空风险）
+基于R138改进，并借鉴R155-157高分策略：
+- 新增：RSI(14)作为入场过滤条件（做多RSI>40，做空RSI<60）
+- 理由：RSI可过滤超买超卖区域，减少假突破
 - 保持：EMA150熊市检测 + ADX>25 + Keltner 2.5x + 成交量1.1x + 波动率自适应
+- 调整：ATR出场2.8→2.5，更快止损
 """
 
 import pandas as pd
@@ -42,13 +43,20 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
     dx = (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, 1) * 100
     adx = dx.rolling(14).mean()
 
+    # ── RSI 过滤指标 ──
+    delta = close.diff()
+    gain = delta.where(delta > 0, 0).rolling(14).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
+    rs = gain / loss.replace(0, 1e-10)
+    rsi = 100 - (100 / (1 + rs))
+
     # ── 波动率自适应仓位 ──
     atr_pct = atr / close
     vol_regime = atr_pct.rolling(50).mean()
     vol_ratio = atr_pct / vol_regime
     vol_mult = np.clip(1.0 / vol_ratio, 0.5, 1.2).fillna(1.0)
 
-    # ── 做多系统（30% 仓位 × 波动系数） ──
+    # ── 做多系统（30% 仓位 × 波动系数 + RSI过滤） ──
     entry_high = high.rolling(58).max()
     exit_low = low.rolling(36).min()
 
@@ -59,7 +67,8 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
         if not in_long:
             if (close.iloc[i] > entry_high.iloc[i - 1]
                     and close.iloc[i] > keltner_upper.iloc[i]
-                    and volume.iloc[i] > 1.1 * vol_ma.iloc[i]):
+                    and volume.iloc[i] > 1.1 * vol_ma.iloc[i]
+                    and rsi.iloc[i] > 40):
                 in_long = True
                 long_signal.iloc[i] = 0.30 * vol_mult.iloc[i]
         else:
@@ -68,12 +77,12 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
             else:
                 long_signal.iloc[i] = 0.30 * vol_mult.iloc[i]
 
-    # ── 做空系统（60% 仓位 × 波动系数，ATR动态出场） ──
+    # ── 做空系统（60% 仓位 × 波动系数 + RSI过滤 + ATR动态出场） ──
     ema150 = close.ewm(span=150, adjust=False).mean()
     ema150_slope = ema150 / ema150.shift(96) - 1
     
-    # ATR动态出场：2.8×ATR，让利润更奔跑
-    atr_exit = atr14 * 2.8
+    # ATR动态出场：2.5×ATR
+    atr_exit = atr14 * 2.5
 
     short_signal = pd.Series(0.0, index=candles.index)
     in_short = False
@@ -90,12 +99,12 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
             if (bear_confirmed
                     and adx_strong
                     and close.iloc[i] < keltner_lower.iloc[i]
-                    and volume.iloc[i] > 1.1 * vol_ma.iloc[i]):
+                    and volume.iloc[i] > 1.1 * vol_ma.iloc[i]
+                    and rsi.iloc[i] > 60):
                 in_short = True
                 entry_price = close.iloc[i]
                 short_signal.iloc[i] = -0.60 * vol_mult.iloc[i]
         else:
-            # ATR动态出场：价格突破入场价+2.8倍ATR时退出
             if close.iloc[i] > entry_price + atr_exit.iloc[i]:
                 in_short = False
             else:
