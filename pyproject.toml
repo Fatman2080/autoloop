@@ -1,0 +1,13 @@
+[project]
+name = "autotrader"
+version = "0.1.0"
+description = "AI 自主量化交易策略研究系统"
+requires-python = ">=3.10"
+dependencies = [
+    "pandas",
+    "numpy",
+    "requests",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["."]
