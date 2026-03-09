@@ -2,11 +2,11 @@
 strategy.py — 量化交易策略
 
 改进说明（基于R86 val_score=2.1159）：
-- 将固定出场周期(36)改为ATR动态止损：做空时在入场价 - 2.0*ATR处设置止损
-- ATR止损让退出点自适应市场波动，在剧烈波动时保护利润，在震荡时避免被洗出
-- 保持做空仓位70%，Keltner 2.5x，EMA150熊市检测，ADX>25，成交量1.1x确认
+- 做空仓位从60%提升到70%，更偏重做空策略
+- 出场窗口从32调整为36，延长空头持仓时间以捕捉更大下跌
+- 保持Keltner 2.5x + EMA150熊市检测 + ADX>25 + 成交量1.1x确认
 
-预期：ATR动态止损比固定周期更灵活，能更好保护盈利
+预期：更重的做空仓位 + 更长的持仓时间 → 提升做空收益
 """
 
 import pandas as pd
@@ -28,7 +28,6 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
         (low - prev_close).abs(),
     ], axis=1).max(axis=1)
     atr = tr.rolling(50).mean()
-    atr14 = tr.rolling(14).mean()  # 用于动态止损
     vol_ma = volume.rolling(50).mean()
 
     keltner_upper = ema50 + 2.5 * atr
@@ -39,6 +38,7 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
     down_move = -low.diff()
     plus_dm = np.where((up_move > down_move) & (up_move > 0), up_move, 0)
     minus_dm = np.where((down_move > up_move) & (down_move > 0), down_move, 0)
+    atr14 = tr.rolling(14).mean()
     plus_di = pd.Series(plus_dm, index=candles.index).rolling(14).mean() / atr14 * 100
     minus_di = pd.Series(minus_dm, index=candles.index).rolling(14).mean() / atr14 * 100
     dx = (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, 1) * 100
@@ -60,18 +60,17 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
                 long_signal.iloc[i] = 0.25
         else:
             if close.iloc[i] < exit_low.iloc[i - 1]:
-                in_short = False
+                in_long = False
             else:
                 long_signal.iloc[i] = 0.25
 
-    # ── 做空系统（EMA斜率熊市 + ADX强趋势 + ATR动态止损，70% 仓位） ──
+    # ── 做空系统（EMA斜率熊市 + ADX强趋势，70% 仓位） ──
     ema150 = close.ewm(span=150, adjust=False).mean()
     ema150_slope = ema150 / ema150.shift(96) - 1
+    exit_high = high.rolling(36).max()  # 从32调整为36，延长持仓时间
 
     short_signal = pd.Series(0.0, index=candles.index)
     in_short = False
-    entry_price = 0.0
-    stop_loss = 0.0
 
     for i in range(150, len(candles)):
         slope = ema150_slope.iloc[i]
@@ -86,21 +85,11 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
                     and close.iloc[i] < keltner_lower.iloc[i]
                     and volume.iloc[i] > 1.1 * vol_ma.iloc[i]):
                 in_short = True
-                entry_price = close.iloc[i]
-                stop_loss = entry_price + 2.0 * atr14.iloc[i]  # 2倍ATR止损
-                short_signal.iloc[i] = -0.70
+                short_signal.iloc[i] = -0.70  # 从-0.60提升到-0.70
         else:
-            # ATR动态止损：价格突破止损位或突破固定周期则退出
-            exit_high = high.rolling(36).max().iloc[i - 1]
-            if close.iloc[i] > stop_loss or close.iloc[i] > exit_high:
+            if close.iloc[i] > exit_high.iloc[i - 1]:
                 in_short = False
-                entry_price = 0.0
-                stop_loss = 0.0
             else:
-                # 更新止损位（向上跟踪，但只允许上升不允许下降）
-                new_stop = close.iloc[i] + 2.0 * atr14.iloc[i]
-                if new_stop < stop_loss:
-                    stop_loss = new_stop
                 short_signal.iloc[i] = -0.70
 
     return (long_signal + short_signal).clip(-1.0, 1.0)
