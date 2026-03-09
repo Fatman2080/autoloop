@@ -1,12 +1,13 @@
 """
-改进策略：做空Keltner系数收紧至2.5x
+改进策略：调整波动率自适应仓位的上下限
 
-基于R208(val_score=3.195)改进：
-1. R208采用L30%/S50%+Keltner3.0x是目前最佳
-2. 做空信号使用keltner_lower作为过滤，当价格<keltner_lower时触发做空
-3. 当前keltner_lower = ema50 - 3.0*atr，系数3.0x较宽，可能在下跌趋势末期（价格已大幅低于ema50）仍触发做空
-4. 改进：将做空Keltner系数从3.0x缩小到2.5x，使做空信号更严格，只在价格更接近或略低于ema50时做空
-5. 预期：减少在下跌趋势末端的假做空信号，提升夏普比率
+基于R211(val_score=3.2246)的改进：
+1. R211策略在多空系统中都使用了波动率自适应仓位调整因子vol_mult
+2. 当前vol_mult的范围为[0.5, 1.2]，计算方式为1.0/vol_ratio，其中vol_ratio=当前ATR/长期ATR均值
+3. 当市场波动率较低时(vol_ratio<1)，1.0/vol_ratio>1，但被限制在1.2以内，限制了在低波动行情中的仓位提升潜力
+4. 当市场波动率较高时(vol_ratio>2)，1.0/vol_ratio<0.5，但被限制在0.5以上，未能充分降低高风险环境下的仓位
+5. 改进：将vol_mult的范围从[0.5, 1.2]调整为[0.3, 1.5]，允许在低波动时更大胆加仓(最大1.5倍)，在高波动时更谨慎减仓(最小0.3倍)
+6. 预期：更好适应不同波动率环境，提高风险调整后收益
 """
 
 import pandas as pd
@@ -31,7 +32,7 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
     atr14 = tr.rolling(14).mean()
     vol_ma = volume.rolling(50).mean()
 
-    # Keltner通道：做多使用3.0x，做空使用2.5x（改进点）
+    # Keltner通道：做多使用3.0x，做空使用2.5x
     keltner_upper = ema50 + 3.0 * atr
     keltner_lower_tight = ema50 - 2.5 * atr  # 做空更严格
 
@@ -45,11 +46,12 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
     dx = (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, 1) * 100
     adx = dx.rolling(14).mean()
 
-    # ── 波动率自适应仓位 ──
+    # ── 波动率自适应仓位（改进点：调整范围）──
     atr_pct = atr / close
     vol_regime = atr_pct.rolling(50).mean()
     vol_ratio = atr_pct / vol_regime
-    vol_mult = np.clip(1.0 / vol_ratio, 0.5, 1.2).fillna(1.0)
+    # 改进：将范围从[0.5, 1.2]调整为[0.3, 1.5]
+    vol_mult = np.clip(1.0 / vol_ratio, 0.3, 1.5).fillna(1.0)
 
     # ── 做多系统（30% 仓位 × 波动系数，ADX>25过滤）──
     entry_high = high.rolling(58).max()
