@@ -1,9 +1,9 @@
 """
 strategy.py — 量化交易策略
 
-基于R138改进（val_score=2.0595）：
-- 调整多空仓位配比：L30% / S70%（原30%/60%），进一步提高做空比例
-- ATR动态出场：做空出场改为atr_multiplier×ATR，原固定36
+基于R141改进（val_score=2.3985）：
+- 做空仓位从70%提升到80%，在下跌趋势中获取更多利润
+- ATR动态出场乘数从2.0x调整到1.8x，更紧密的止损来保护利润
 - 保持：EMA150熊市检测 + ADX>25 + Keltner 2.5x + 成交量1.1x + 波动率自适应
 """
 
@@ -68,12 +68,12 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
             else:
                 long_signal.iloc[i] = 0.30 * vol_mult.iloc[i]
 
-    # ── 做空系统（70% 仓位 × 波动系数，ATR动态出场） ──
+    # ── 做空系统（80% 仓位 × 波动系数，ATR动态出场1.8x） ──
     ema150 = close.ewm(span=150, adjust=False).mean()
     ema150_slope = ema150 / ema150.shift(96) - 1
     
-    # ATR动态出场
-    atr_exit = atr14 * 2.0
+    # ATR动态出场（1.8倍，比之前的2.0倍更紧密）
+    atr_exit = atr14 * 1.8
 
     short_signal = pd.Series(0.0, index=candles.index)
     in_short = False
@@ -93,12 +93,12 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
                     and volume.iloc[i] > 1.1 * vol_ma.iloc[i]):
                 in_short = True
                 entry_price = close.iloc[i]
-                short_signal.iloc[i] = -0.70 * vol_mult.iloc[i]
+                short_signal.iloc[i] = -0.80 * vol_mult.iloc[i]
         else:
-            # ATR动态出场：价格突破入场价+2倍ATR时退出
+            # ATR动态出场：价格突破入场价+1.8倍ATR时退出
             if close.iloc[i] > entry_price + atr_exit.iloc[i]:
                 in_short = False
             else:
-                short_signal.iloc[i] = -0.70 * vol_mult.iloc[i]
+                short_signal.iloc[i] = -0.80 * vol_mult.iloc[i]
 
     return (long_signal + short_signal).clip(-1.0, 1.0)
