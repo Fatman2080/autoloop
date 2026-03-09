@@ -1,15 +1,11 @@
 """
 strategy.py — 量化交易策略
 
-基于R136（val_score=2.3791）的改进：
-- 做空仓位从70%提升到80%（历史数据显示更高做空仓位往往val_score更高）
-- 做空出场通道从36缩短到30（更紧密止损，保留更多利润）
-- 保持波动率自适应仓位 + EMA150熊市检测 + ADX>25 + Keltner 2.5x + 成交量1.1x
-
-改进理由：
-- R75曾尝试L30%/S50%达到val_score=2.3323，说明高做空仓位有潜力
-- R109/112/114等高val_score策略也显示高做空仓位有效性
-- 更紧密的出场通道可以减少回撤
+基于R86（val_score=2.1159）的改进：
+- 新增波动率自适应仓位：根据ATR/价格比率动态调整仓位
+- 当市场波动高于历史均值时降仓，低时加仓
+- 保持：EMA150熊市检测 + ADX>25 + Keltner 2.5x + 成交量1.1x
+- 做空70%仓位 + 36出场保持不变
 """
 
 import pandas as pd
@@ -48,13 +44,15 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
     adx = dx.rolling(14).mean()
 
     # ── 波动率自适应仓位 ──
-    atr_pct = atr / close
-    vol_regime = atr_pct.rolling(50).mean()
-    vol_ratio = atr_pct / vol_regime
+    atr_pct = atr / close  # 相对波动率
+    vol_regime = atr_pct.rolling(50).mean()  # 历史平均波动率
+    vol_ratio = atr_pct / vol_regime  # 当前/历史波动率比
+    
+    # 波动率高时降仓，低时加仓，范围[0.5, 1.2]
     vol_mult = np.clip(1.0 / vol_ratio, 0.5, 1.2)
     vol_mult = vol_mult.fillna(1.0)
 
-    # ── 做多系统（25% 仓位 × 波动系数） ──
+    # ── 做多系统（始终运行，25% 仓位 × 波动系数） ──
     entry_high = high.rolling(58).max()
     exit_low = low.rolling(28).min()
 
@@ -74,10 +72,10 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
             else:
                 long_signal.iloc[i] = 0.25 * vol_mult.iloc[i]
 
-    # ── 做空系统（80% 仓位 × 波动系数，出场通道30） ──
+    # ── 做空系统（EMA斜率熊市 + ADX强趋势，70% 仓位 × 波动系数） ──
     ema150 = close.ewm(span=150, adjust=False).mean()
     ema150_slope = ema150 / ema150.shift(96) - 1
-    exit_high = high.rolling(30).max()  # 从36缩短到30
+    exit_high = high.rolling(36).max()
 
     short_signal = pd.Series(0.0, index=candles.index)
     in_short = False
@@ -95,11 +93,11 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
                     and close.iloc[i] < keltner_lower.iloc[i]
                     and volume.iloc[i] > 1.1 * vol_ma.iloc[i]):
                 in_short = True
-                short_signal.iloc[i] = -0.80 * vol_mult.iloc[i]  # 从70%提升到80%
+                short_signal.iloc[i] = -0.70 * vol_mult.iloc[i]
         else:
             if close.iloc[i] > exit_high.iloc[i - 1]:
                 in_short = False
             else:
-                short_signal.iloc[i] = -0.80 * vol_mult.iloc[i]
+                short_signal.iloc[i] = -0.70 * vol_mult.iloc[i]
 
     return (long_signal + short_signal).clip(-1.0, 1.0)
