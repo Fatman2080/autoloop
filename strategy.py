@@ -1,11 +1,11 @@
 """
 改进策略：调整做空系统的部分止盈比例
 
-基于R249(val_score=3.5685)的改进：
-1. 当前策略：做空部分止盈触发时平仓70%（剩余30%仓位继续持有）
-2. 改进：将部分止盈平仓比例从70%提高到80%（剩余20%仓位继续持有）
-3. 理由：延续R246→R249的成功模式，进一步锁定利润，减少回撤风险
-4. 预期：可能进一步提高夏普比率，通过更积极的利润保护
+基于R250(val_score=3.5744)的改进：
+1. 当前策略：做空部分止盈触发时平仓80%（剩余20%仓位继续持有）
+2. 改进：将部分止盈平仓比例从80%提高到85%（剩余15%仓位继续持有）
+3. 理由：延续R245→R246→R249→R250的成功模式，继续提高止盈比例以锁定更多利润
+4. 预期：可能进一步提高夏普比率
 """
 
 import pandas as pd
@@ -74,7 +74,7 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
             else:
                 long_signal.iloc[i] = 0.30 * vol_mult.iloc[i]
 
-    # ── 做空系统（50% 仓位 × 波动系数，部分止盈比例从70%提高到80%）──
+    # ── 做空系统（50% 仓位 × 波动系数，部分止盈比例从80%提高到85%）──
     ema150 = close.ewm(span=150, adjust=False).mean()
     ema150_slope = ema150 / ema150.shift(96) - 1
     
@@ -105,8 +105,8 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
         else:
             # 检查是否触发部分止盈（价格有利移动2.5x ATR）
             if not partial_closed and close.iloc[i] <= entry_price - atr_take_profit.iloc[i]:
-                # 平掉80%仓位，剩余20%仓位（0.50 * 0.2 = 0.10）
-                short_signal.iloc[i] = -0.10 * vol_mult.iloc[i]
+                # 平掉85%仓位，剩余15%仓位（0.50 * 0.15 = 0.075）
+                short_signal.iloc[i] = -0.075 * vol_mult.iloc[i]
                 partial_closed = True
             elif close.iloc[i] > entry_price + atr_exit.iloc[i]:
                 # 止损出场
@@ -115,7 +115,7 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
             else:
                 # 继续持有剩余仓位
                 if partial_closed:
-                    short_signal.iloc[i] = -0.10 * vol_mult.iloc[i]  # 剩余20%仓位
+                    short_signal.iloc[i] = -0.075 * vol_mult.iloc[i]  # 剩余15%仓位
                 else:
                     short_signal.iloc[i] = -0.50 * vol_mult.iloc[i]
 
