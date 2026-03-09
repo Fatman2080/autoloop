@@ -1,11 +1,11 @@
 """
 改进策略：调整做空系统的部分止盈比例
 
-基于R246(val_score=3.5339)的改进：
-1. 当前策略：做空部分止盈触发时平仓50%（剩余50%仓位继续持有）
-2. 改进：将部分止盈平仓比例从50%提高到70%（剩余30%仓位继续持有）
-3. 理由：提高止盈比例可以锁定更多利润，减少利润回吐，同时保留少量仓位参与潜在趋势延续
-4. 预期：可能提高夏普比率，通过更积极的利润保护来改善风险调整后收益
+基于R249(val_score=3.5685)的改进：
+1. 当前策略：做空部分止盈触发时平仓70%（剩余30%仓位继续持有）
+2. 改进：将部分止盈平仓比例从70%提高到80%（剩余20%仓位继续持有）
+3. 理由：延续R246→R249的成功模式，进一步锁定利润，减少回撤风险
+4. 预期：可能进一步提高夏普比率，通过更积极的利润保护
 """
 
 import pandas as pd
@@ -74,7 +74,7 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
             else:
                 long_signal.iloc[i] = 0.30 * vol_mult.iloc[i]
 
-    # ── 做空系统（50% 仓位 × 波动系数，部分止盈比例从50%提高到70%）──
+    # ── 做空系统（50% 仓位 × 波动系数，部分止盈比例从70%提高到80%）──
     ema150 = close.ewm(span=150, adjust=False).mean()
     ema150_slope = ema150 / ema150.shift(96) - 1
     
@@ -84,7 +84,7 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
     short_signal = pd.Series(0.0, index=candles.index)
     in_short = False
     entry_price = 0.0
-    half_closed = False  # 改名为partial_taken更合适，但保持原变量名
+    partial_closed = False
 
     for i in range(150, len(candles)):
         slope = ema150_slope.iloc[i]
@@ -100,22 +100,22 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
                     and volume.iloc[i] > 1.1 * vol_ma.iloc[i]):
                 in_short = True
                 entry_price = close.iloc[i]
-                half_closed = False
+                partial_closed = False
                 short_signal.iloc[i] = -0.50 * vol_mult.iloc[i]
         else:
             # 检查是否触发部分止盈（价格有利移动2.5x ATR）
-            if not half_closed and close.iloc[i] <= entry_price - atr_take_profit.iloc[i]:
-                # 平掉70%仓位（原为50%），剩余30%仓位
-                short_signal.iloc[i] = -0.15 * vol_mult.iloc[i]  # 0.50 * 0.3 = 0.15
-                half_closed = True
+            if not partial_closed and close.iloc[i] <= entry_price - atr_take_profit.iloc[i]:
+                # 平掉80%仓位，剩余20%仓位（0.50 * 0.2 = 0.10）
+                short_signal.iloc[i] = -0.10 * vol_mult.iloc[i]
+                partial_closed = True
             elif close.iloc[i] > entry_price + atr_exit.iloc[i]:
                 # 止损出场
                 in_short = False
-                half_closed = False
+                partial_closed = False
             else:
                 # 继续持有剩余仓位
-                if half_closed:
-                    short_signal.iloc[i] = -0.15 * vol_mult.iloc[i]  # 剩余30%仓位
+                if partial_closed:
+                    short_signal.iloc[i] = -0.10 * vol_mult.iloc[i]  # 剩余20%仓位
                 else:
                     short_signal.iloc[i] = -0.50 * vol_mult.iloc[i]
 
