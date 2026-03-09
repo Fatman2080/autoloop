@@ -1,12 +1,15 @@
 """
 strategy.py — 量化交易策略
 
-改进说明（基于R86 val_score=2.1159）：
-- 做空仓位从60%提升到70%，更偏重做空策略
-- 出场窗口从32调整为36，延长空头持仓时间以捕捉更大下跌
-- 保持Keltner 2.5x + EMA150熊市检测 + ADX>25 + 成交量1.1x确认
+基于R86（val_score=2.1159）的改进：
+- 出场窗口从36调整为44，进一步延长空头持仓时间
+- 成交量确认从1.1x提升至1.2x，更严格过滤假突破
+- 其他参数保持不变：做空70%仓位+Keltner 2.5x+EMA150熊市+ADX>25
 
-预期：更重的做空仓位 + 更长的持仓时间 → 提升做空收益
+改进理由：
+1. 历史数据显示更长的空头持仓时间（如R29达到2.3331）有助于捕捉更大下跌
+2. 更严格的成交量确认可减少假突破，提高信号质量
+3. 保持仓位配比和趋势过滤不变，聚焦单一变量
 """
 
 import pandas as pd
@@ -55,7 +58,7 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
         if not in_long:
             if (close.iloc[i] > entry_high.iloc[i - 1]
                     and close.iloc[i] > keltner_upper.iloc[i]
-                    and volume.iloc[i] > 1.1 * vol_ma.iloc[i]):
+                    and volume.iloc[i] > 1.2 * vol_ma.iloc[i]):  # 从1.1x提升至1.2x
                 in_long = True
                 long_signal.iloc[i] = 0.25
         else:
@@ -67,7 +70,7 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
     # ── 做空系统（EMA斜率熊市 + ADX强趋势，70% 仓位） ──
     ema150 = close.ewm(span=150, adjust=False).mean()
     ema150_slope = ema150 / ema150.shift(96) - 1
-    exit_high = high.rolling(36).max()  # 从32调整为36，延长持仓时间
+    exit_high = high.rolling(44).max()  # 从36调整为44
 
     short_signal = pd.Series(0.0, index=candles.index)
     in_short = False
@@ -83,9 +86,9 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
             if (bear_confirmed
                     and adx_strong
                     and close.iloc[i] < keltner_lower.iloc[i]
-                    and volume.iloc[i] > 1.1 * vol_ma.iloc[i]):
+                    and volume.iloc[i] > 1.2 * vol_ma.iloc[i]):  # 从1.1x提升至1.2x
                 in_short = True
-                short_signal.iloc[i] = -0.70  # 从-0.60提升到-0.70
+                short_signal.iloc[i] = -0.70
         else:
             if close.iloc[i] > exit_high.iloc[i - 1]:
                 in_short = False
