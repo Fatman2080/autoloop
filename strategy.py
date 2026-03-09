@@ -2,11 +2,9 @@
 strategy.py — 量化交易策略
 
 基于R138改进（val_score=2.0595）：
-- 调整做空ATR动态出场：2.8×ATR → 2.5×ATR（接近R155-157历史最佳参数）
-- 保持做空仓位：60%
+- 调整做空ATR动态出场：2.5×ATR → 2.8×ATR，更宽的ATR出场让利润奔跑
+- 调整做空仓位：70% → 60%（减少过重做空风险）
 - 保持：EMA150熊市检测 + ADX>25 + Keltner 2.5x + 成交量1.1x + 波动率自适应
-
-历史最佳R155-157使用2.5xATR获得val_score≈2.57，本策略尝试找回该参数。
 """
 
 import pandas as pd
@@ -74,8 +72,8 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
     ema150 = close.ewm(span=150, adjust=False).mean()
     ema150_slope = ema150 / ema150.shift(96) - 1
     
-    # ATR动态出场：2.5×ATR（历史最佳参数）
-    atr_exit = atr14 * 2.5
+    # ATR动态出场：2.8×ATR，让利润更奔跑
+    atr_exit = atr14 * 2.8
 
     short_signal = pd.Series(0.0, index=candles.index)
     in_short = False
@@ -97,7 +95,7 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
                 entry_price = close.iloc[i]
                 short_signal.iloc[i] = -0.60 * vol_mult.iloc[i]
         else:
-            # ATR动态出场：价格突破入场价+2.5倍ATR时退出
+            # ATR动态出场：价格突破入场价+2.8倍ATR时退出
             if close.iloc[i] > entry_price + atr_exit.iloc[i]:
                 in_short = False
             else:
