@@ -1,15 +1,6 @@
 """
 strategy.py — AI 唯一修改的文件
 实现交易策略，输出仓位信号。
-
-改动：ATR追踪止损替代固定Donchian出场
-- 做多出场：max(入场价 - 2*ATR14, 跟踪低点) 替代固定Donchian(28)低
-- 做空出场：min(入场价 + 2*ATR14, 跟踪高点) 替代固定Donchian(36)高
-- ATR止损更灵活，让盈利仓位继续奔跑，亏损时及时止损
-
-其他参数保持R20不变：
-- 做多25%，做空40%
-- EMA150斜率<-5%熊市检测 + ADX>25趋势过滤
 """
 
 import pandas as pd
@@ -17,6 +8,30 @@ import numpy as np
 
 
 def generate_signals(candles: pd.DataFrame) -> pd.Series:
+    """
+    输入：K线数据 DataFrame，包含列：
+        价格数据：timestamp, open, high, low, close, volume
+        衍生品数据：funding_rate, open_interest,
+                    liq_long_usd, liq_short_usd, liq_total_usd,
+                    long_short_ratio
+
+    输出：仓位信号 Series，值在 -1.0 ~ 1.0 之间
+        - -1.0 = 满仓做空
+        -  0.0 = 空仓
+        -  1.0 = 满仓做多
+
+    规则：
+        - 只能使用当前及之前的 K 线数据（禁止未来数据）
+        - 可以使用任何技术指标、数学方法、模式识别
+        - 只允许 import pandas 和 numpy
+
+    策略：独立叠加多空系统 + EMA 斜率熊市检测 + ADX 趋势强度 (R20)
+    - 做多系统（始终运行）：Donchian(58h) + Keltner上轨(2.0x) + 成交量 → 25%
+    - 做空系统（仅熊市+强趋势）：Keltner下轨(2.0x) + 成交量 + 熊市确认 + ADX>25 → 40%
+    - 熊市判定：价格 < EMA(150) 且 EMA(150) 96h内下跌 > 5%
+    - ADX>25 过滤弱趋势做空，减少震荡市亏损交易
+    - 两系统信号独立叠加，互不干扰
+    """
     close = candles["close"]
     high = candles["high"]
     low = candles["low"]
@@ -31,7 +46,6 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
         (low - prev_close).abs(),
     ], axis=1).max(axis=1)
     atr = tr.rolling(50).mean()
-    atr14 = tr.rolling(14).mean()
     vol_ma = volume.rolling(50).mean()
 
     keltner_upper = ema50 + 2.0 * atr
@@ -42,23 +56,18 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
     down_move = -low.diff()
     plus_dm = np.where((up_move > down_move) & (up_move > 0), up_move, 0)
     minus_dm = np.where((down_move > up_move) & (down_move > 0), down_move, 0)
+    atr14 = tr.rolling(14).mean()
     plus_di = pd.Series(plus_dm, index=candles.index).rolling(14).mean() / atr14 * 100
     minus_di = pd.Series(minus_dm, index=candles.index).rolling(14).mean() / atr14 * 100
     dx = (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, 1) * 100
     adx = dx.rolling(14).mean()
 
-    # ── 熊市检测 ──
-    ema150 = close.ewm(span=150, adjust=False).mean()
-    ema150_slope = ema150 / ema150.shift(96) - 1
-
-    # ── 做多系统（25% 仓位，ATR追踪止损） ──
+    # ── 做多系统（始终运行，25% 仓位） ──
     entry_high = high.rolling(58).max()
-    
+    exit_low = low.rolling(28).min()
+
     long_signal = pd.Series(0.0, index=candles.index)
     in_long = False
-    long_entry_price = 0.0
-    long_stop_price = 0.0
-    long_trailing_low = float('inf')
 
     for i in range(58, len(candles)):
         if not in_long:
@@ -66,26 +75,20 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
                     and close.iloc[i] > keltner_upper.iloc[i]
                     and volume.iloc[i] > 1.1 * vol_ma.iloc[i]):
                 in_long = True
-                long_entry_price = close.iloc[i]
-                long_trailing_low = low.iloc[i]
-                long_stop_price = long_entry_price - 2.0 * atr14.iloc[i]
                 long_signal.iloc[i] = 0.25
         else:
-            # 更新跟踪低点
-            long_trailing_low = min(long_trailing_low, low.iloc[i])
-            # 动态止损：max(入场-2ATR, 跟踪低点)
-            long_stop_price = max(long_entry_price - 2.0 * atr14.iloc[i], long_trailing_low)
-            
-            if close.iloc[i] < long_stop_price:
+            if close.iloc[i] < exit_low.iloc[i - 1]:
                 in_long = False
             else:
                 long_signal.iloc[i] = 0.25
 
-    # ── 做空系统（40% 仓位，仅熊市+强趋势，ATR追踪止损） ──
+    # ── 做空系统（仅在 EMA斜率熊市 + ADX强趋势 中激活，40% 仓位） ──
+    ema150 = close.ewm(span=150, adjust=False).mean()
+    ema150_slope = ema150 / ema150.shift(96) - 1
+    exit_high = high.rolling(36).max()
+
     short_signal = pd.Series(0.0, index=candles.index)
     in_short = False
-    short_entry_price = 0.0
-    short_trailing_high = 0.0
 
     for i in range(150, len(candles)):
         slope = ema150_slope.iloc[i]
@@ -100,16 +103,9 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
                     and close.iloc[i] < keltner_lower.iloc[i]
                     and volume.iloc[i] > 1.1 * vol_ma.iloc[i]):
                 in_short = True
-                short_entry_price = close.iloc[i]
-                short_trailing_high = high.iloc[i]
                 short_signal.iloc[i] = -0.4
         else:
-            # 更新跟踪高点
-            short_trailing_high = max(short_trailing_high, high.iloc[i])
-            # 动态止损：min(入场+2ATR, 跟踪高点)
-            short_stop_price = min(short_entry_price + 2.0 * atr14.iloc[i], short_trailing_high)
-            
-            if close.iloc[i] > short_stop_price:
+            if close.iloc[i] > exit_high.iloc[i - 1]:
                 in_short = False
             else:
                 short_signal.iloc[i] = -0.4
