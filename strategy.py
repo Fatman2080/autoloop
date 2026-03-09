@@ -2,12 +2,12 @@
 strategy.py — 量化交易策略
 
 改进说明：
-- 基于R86配置（val_score=2.1159），将Keltner通道宽度从2.0x扩大到2.5x
-- Keltner上轨更宽松，做空信号需要价格更低于下轨才能触发，减少假突破
-- 保持EMA150斜率熊市检测 + ADX>25 + 成交量确认1.1x
-- 做空仓位保持在50%
+- 基于R86配置，将EMA从150改为200（更稳定，减少噪音）
+- 做空仓位从50%调整为45%（介于R20的40%和R86的50%之间）
+- Keltner保持2.0x ATR（比2.5x更稳健）
+- 保持ADX>25趋势过滤 + 成交量1.1x确认
 
-预期：更宽的Keltner通道可以过滤噪音，做空信号更精准
+预期：EMA200更平滑，减少假信号；仓位微调可能提升Sharpe
 """
 
 import pandas as pd
@@ -31,8 +31,9 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
     atr = tr.rolling(50).mean()
     vol_ma = volume.rolling(50).mean()
 
-    keltner_upper = ema50 + 2.5 * atr  # 宽通道2.5x
-    keltner_lower = ema50 - 2.5 * atr
+    # Keltner 2.0x ATR - 更稳健
+    keltner_upper = ema50 + 2.0 * atr
+    keltner_lower = ema50 - 2.0 * atr
 
     # ── ADX 趋势强度指标 ──
     up_move = high.diff()
@@ -65,19 +66,20 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
             else:
                 long_signal.iloc[i] = 0.25
 
-    # ── 做空系统（仅在 EMA斜率熊市 + ADX强趋势 中激活，50% 仓位） ──
-    ema150 = close.ewm(span=150, adjust=False).mean()
-    ema150_slope = ema150 / ema150.shift(96) - 1
+    # ── 做空系统（仅在 EMA200斜率熊市 + ADX强趋势 中激活，45% 仓位） ──
+    # 改用EMA200，更平滑
+    ema200 = close.ewm(span=200, adjust=False).mean()
+    ema200_slope = ema200 / ema200.shift(96) - 1
     exit_high = high.rolling(36).max()
 
     short_signal = pd.Series(0.0, index=candles.index)
     in_short = False
 
-    for i in range(150, len(candles)):
-        slope = ema150_slope.iloc[i]
+    for i in range(200, len(candles)):
+        slope = ema200_slope.iloc[i]
         if np.isnan(slope):
             slope = 0.0
-        bear_confirmed = close.iloc[i] < ema150.iloc[i] and slope < -0.05
+        bear_confirmed = close.iloc[i] < ema200.iloc[i] and slope < -0.05
         adx_strong = adx.iloc[i] > 25 if not np.isnan(adx.iloc[i]) else False
 
         if not in_short:
@@ -86,11 +88,11 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
                     and close.iloc[i] < keltner_lower.iloc[i]
                     and volume.iloc[i] > 1.1 * vol_ma.iloc[i]):
                 in_short = True
-                short_signal.iloc[i] = -0.50
+                short_signal.iloc[i] = -0.45  # 45%仓位，介于40%和50%之间
         else:
             if close.iloc[i] > exit_high.iloc[i - 1]:
                 in_short = False
             else:
-                short_signal.iloc[i] = -0.50
+                short_signal.iloc[i] = -0.45
 
     return (long_signal + short_signal).clip(-1.0, 1.0)
