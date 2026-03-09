@@ -1,22 +1,37 @@
 """
 strategy.py — AI 唯一修改的文件
 实现交易策略，输出仓位信号。
-
-改进点 (vs R20):
-- 做空系统简化：去掉EMA150熊市限制，只保留ADX>20趋势强度过滤
-- ATR追踪止损：代替固定的exit_high/low，动态跟踪价格波动
-- Keltner参数微调：做空用1.5x（更敏感），做多用2.0x保持不变
-
-理由:
-- 历史显示ATR固定止损失败(R11)，但ATR追踪止损更灵活
-- R29 val_score=2.33说明做空系统有潜力
-- 减少限制条件可能增加有效交易次数
 """
+
 import pandas as pd
 import numpy as np
 
 
 def generate_signals(candles: pd.DataFrame) -> pd.Series:
+    """
+    输入：K线数据 DataFrame，包含列：
+        价格数据：timestamp, open, high, low, close, volume
+        衍生品数据：funding_rate, open_interest,
+                    liq_long_usd, liq_short_usd, liq_total_usd,
+                    long_short_ratio
+
+    输出：仓位信号 Series，值在 -1.0 ~ 1.0 之间
+        - -1.0 = 满仓做空
+        -  0.0 = 空仓
+        -  1.0 = 满仓做多
+
+    规则：
+        - 只能使用当前及之前的 K 线数据（禁止未来数据）
+        - 可以使用任何技术指标、数学方法、模式识别
+        - 只允许 import pandas 和 numpy
+
+    策略：独立叠加多空系统 + EMA 斜率熊市检测 + ADX 趋势强度 (R20)
+    - 做多系统（始终运行）：Donchian(58h) + Keltner上轨(2.0x) + 成交量 → 25%
+    - 做空系统（仅熊市+强趋势）：Keltner下轨(2.0x) + 成交量 + 熊市确认 + ADX>25 → 40%
+    - 熊市判定：价格 < EMA(150) 且 EMA(150) 96h内下跌 > 5%
+    - ADX>25 过滤弱趋势做空，减少震荡市亏损交易
+    - 两系统信号独立叠加，互不干扰
+    """
     close = candles["close"]
     high = candles["high"]
     low = candles["low"]
@@ -34,7 +49,7 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
     vol_ma = volume.rolling(50).mean()
 
     keltner_upper = ema50 + 2.0 * atr
-    keltner_lower = ema50 - 1.5 * atr  # 调窄做空轨道
+    keltner_lower = ema50 - 2.0 * atr
 
     # ── ADX 趋势强度指标 ──
     up_move = high.diff()
@@ -67,36 +82,32 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
             else:
                 long_signal.iloc[i] = 0.25
 
-    # ── 做空系统（简化版：仅ADX>20强趋势，无熊市限制） ──
+    # ── 做空系统（仅在 EMA斜率熊市 + ADX强趋势 中激活，40% 仓位） ──
+    ema150 = close.ewm(span=150, adjust=False).mean()
+    ema150_slope = ema150 / ema150.shift(96) - 1
     exit_high = high.rolling(36).max()
-    
+
     short_signal = pd.Series(0.0, index=candles.index)
     in_short = False
-    atr_stop = 0.0
-    
+
     for i in range(150, len(candles)):
-        adx_val = adx.iloc[i]
-        if np.isnan(adx_val):
-            adx_val = 0.0
-        adx_strong = adx_val > 20  # 降低阈值增加机会
-        
+        slope = ema150_slope.iloc[i]
+        if np.isnan(slope):
+            slope = 0.0
+        bear_confirmed = close.iloc[i] < ema150.iloc[i] and slope < -0.05
+        adx_strong = adx.iloc[i] > 25 if not np.isnan(adx.iloc[i]) else False
+
         if not in_short:
-            if (adx_strong
+            if (bear_confirmed
+                    and adx_strong
                     and close.iloc[i] < keltner_lower.iloc[i]
                     and volume.iloc[i] > 1.1 * vol_ma.iloc[i]):
                 in_short = True
-                atr_stop = 2.5 * atr.iloc[i]  # ATR追踪止损起点
-                short_signal.iloc[i] = -0.35  # 仓位降至35%
+                short_signal.iloc[i] = -0.4
         else:
-            # ATR追踪止损
-            stop_price = close.iloc[i] + atr_stop
-            if close.iloc[i] > exit_high.iloc[i - 1] or close.iloc[i] > stop_price:
+            if close.iloc[i] > exit_high.iloc[i - 1]:
                 in_short = False
             else:
-                # 动态更新止损位（仅收窄不放宽）
-                new_stop = 2.0 * atr.iloc[i]
-                if new_stop < atr_stop:
-                    atr_stop = new_stop
-                short_signal.iloc[i] = -0.35
+                short_signal.iloc[i] = -0.4
 
     return (long_signal + short_signal).clip(-1.0, 1.0)
