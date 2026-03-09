@@ -1,6 +1,14 @@
 """
 strategy.py — AI 唯一修改的文件
 实现交易策略，输出仓位信号。
+
+改动说明（R61）：
+- 参考 R29 (val_score 2.3331) 的成功参数：出场通道从 28 缩短到 24
+- 微调 Keltner ATR 倍数：2.0x → 1.8x，使轨道更敏感
+- 保持 L25%/S40% 仓位配置
+- 保持 EMA150 熊市检测 + ADX > 25 趋势过滤
+
+预期：更短的出场可能提高 val_score，1.8x 轨道提供更灵活的进出场点
 """
 
 import pandas as pd
@@ -8,30 +16,6 @@ import numpy as np
 
 
 def generate_signals(candles: pd.DataFrame) -> pd.Series:
-    """
-    输入：K线数据 DataFrame，包含列：
-        价格数据：timestamp, open, high, low, close, volume
-        衍生品数据：funding_rate, open_interest,
-                    liq_long_usd, liq_short_usd, liq_total_usd,
-                    long_short_ratio
-
-    输出：仓位信号 Series，值在 -1.0 ~ 1.0 之间
-        - -1.0 = 满仓做空
-        -  0.0 = 空仓
-        -  1.0 = 满仓做多
-
-    规则：
-        - 只能使用当前及之前的 K 线数据（禁止未来数据）
-        - 可以使用任何技术指标、数学方法、模式识别
-        - 只允许 import pandas 和 numpy
-
-    策略：独立叠加多空系统 + EMA 斜率熊市检测 + ADX 趋势强度 (R20)
-    - 做多系统（始终运行）：Donchian(58h) + Keltner上轨(2.0x) + 成交量 → 25%
-    - 做空系统（仅熊市+强趋势）：Keltner下轨(2.0x) + 成交量 + 熊市确认 + ADX>25 → 40%
-    - 熊市判定：价格 < EMA(150) 且 EMA(150) 96h内下跌 > 5%
-    - ADX>25 过滤弱趋势做空，减少震荡市亏损交易
-    - 两系统信号独立叠加，互不干扰
-    """
     close = candles["close"]
     high = candles["high"]
     low = candles["low"]
@@ -48,8 +32,9 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
     atr = tr.rolling(50).mean()
     vol_ma = volume.rolling(50).mean()
 
-    keltner_upper = ema50 + 2.0 * atr
-    keltner_lower = ema50 - 2.0 * atr
+    # Keltner 轨道：ATR 倍数从 2.0 降至 1.8，更敏感
+    keltner_upper = ema50 + 1.8 * atr
+    keltner_lower = ema50 - 1.8 * atr
 
     # ── ADX 趋势强度指标 ──
     up_move = high.diff()
@@ -63,8 +48,10 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
     adx = dx.rolling(14).mean()
 
     # ── 做多系统（始终运行，25% 仓位） ──
+    # 入场通道保持 58
     entry_high = high.rolling(58).max()
-    exit_low = low.rolling(28).min()
+    # 出场通道从 28 缩短到 24（参考 R29）
+    exit_low = low.rolling(24).min()
 
     long_signal = pd.Series(0.0, index=candles.index)
     in_long = False
@@ -85,7 +72,8 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
     # ── 做空系统（仅在 EMA斜率熊市 + ADX强趋势 中激活，40% 仓位） ──
     ema150 = close.ewm(span=150, adjust=False).mean()
     ema150_slope = ema150 / ema150.shift(96) - 1
-    exit_high = high.rolling(36).max()
+    # 出场通道从 36 缩短到 24（参考 R29）
+    exit_high = high.rolling(24).max()
 
     short_signal = pd.Series(0.0, index=candles.index)
     in_short = False
