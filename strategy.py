@@ -1,11 +1,12 @@
 """
-改进策略：恢复做空仓位至50%
+改进策略：做空Keltner系数收紧至2.5x
 
-基于R207(val_score=3.1921)与R195/R196对比分析：
-1. R196(L35/S45) vs R195(L35/S50): 降低做空仓位导致分数下降(3.074 vs 3.077)，说明做空仓位50%优于45%。
-2. R207(L30/S45) vs R195(L35/S50): 降低做多仓位显著提升分数(3.192 vs 3.077)，主要归功于回撤降低。
-3. 结合点：保持做多仓位30%以控制回撤，恢复做空仓位至50%以提升收益。
-4. 预期：在保持低回撤的同时，提升收益率，从而获得更高的夏普比率。
+基于R208(val_score=3.195)改进：
+1. R208采用L30%/S50%+Keltner3.0x是目前最佳
+2. 做空信号使用keltner_lower作为过滤，当价格<keltner_lower时触发做空
+3. 当前keltner_lower = ema50 - 3.0*atr，系数3.0x较宽，可能在下跌趋势末期（价格已大幅低于ema50）仍触发做空
+4. 改进：将做空Keltner系数从3.0x缩小到2.5x，使做空信号更严格，只在价格更接近或略低于ema50时做空
+5. 预期：减少在下跌趋势末端的假做空信号，提升夏普比率
 """
 
 import pandas as pd
@@ -30,8 +31,9 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
     atr14 = tr.rolling(14).mean()
     vol_ma = volume.rolling(50).mean()
 
+    # Keltner通道：做多使用3.0x，做空使用2.5x（改进点）
     keltner_upper = ema50 + 3.0 * atr
-    keltner_lower = ema50 - 3.0 * atr
+    keltner_lower_tight = ema50 - 2.5 * atr  # 做空更严格
 
     # ── ADX 趋势强度指标 ──
     up_move = high.diff()
@@ -73,7 +75,7 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
             else:
                 long_signal.iloc[i] = 0.30 * vol_mult.iloc[i]
 
-    # ── 做空系统（50% 仓位 × 波动系数，ATR动态出场2.5x）──
+    # ── 做空系统（50% 仓位 × 波动系数，使用更严格的Keltner 2.5x）──
     ema150 = close.ewm(span=150, adjust=False).mean()
     ema150_slope = ema150 / ema150.shift(96) - 1
     
@@ -93,15 +95,15 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
         if not in_short:
             if (bear_confirmed
                     and adx_strong
-                    and close.iloc[i] < keltner_lower.iloc[i]
+                    and close.iloc[i] < keltner_lower_tight.iloc[i]  # 使用更严格的2.5x
                     and volume.iloc[i] > 1.1 * vol_ma.iloc[i]):
                 in_short = True
                 entry_price = close.iloc[i]
-                short_signal.iloc[i] = -0.50 * vol_mult.iloc[i]  # 恢复至50%
+                short_signal.iloc[i] = -0.50 * vol_mult.iloc[i]
         else:
             if close.iloc[i] > entry_price + atr_exit.iloc[i]:
                 in_short = False
             else:
-                short_signal.iloc[i] = -0.50 * vol_mult.iloc[i]  # 恢复至50%
+                short_signal.iloc[i] = -0.50 * vol_mult.iloc[i]
 
     return (long_signal + short_signal).clip(-1.0, 1.0)
