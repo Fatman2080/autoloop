@@ -1,11 +1,11 @@
 """
-改进策略：做空系统增加部分止盈机制
+改进策略：调整做空部分止盈触发阈值
 
-基于R236(val_score=3.331)的改进：
-1. 当前做空系统使用单一ATR 2.5x止损出场
-2. 改进：增加部分止盈——当价格朝有利方向移动2x ATR时，平掉50%仓位
-3. 剩余50%仓位继续持有到ATR止损出场
-4. 预期：既能锁定部分利润，又能保留趋势延续机会
+基于R245(val_score=3.4919)的改进：
+1. R245做空部分止盈触发：价格有利移动2x ATR时平50%仓位
+2. 改进：将触发阈值从2x ATR提高到2.5x ATR
+3. 理由：2x ATR触发过于频繁，可能错过更大的趋势行情
+4. 预期：让更多仓位留在趋势中，捕获更大利润
 """
 
 import pandas as pd
@@ -44,7 +44,7 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
     dx = (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, 1) * 100
     adx = dx.rolling(14).mean()
 
-    # ── 波动率自适应仓位（从[0.25, 2.0]）──
+    # ── 波动率自适应仓位（[0.25, 2.0]）──
     atr_pct = atr / close
     vol_regime = atr_pct.rolling(50).mean()
     vol_ratio = atr_pct / vol_regime
@@ -74,12 +74,12 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
             else:
                 long_signal.iloc[i] = 0.30 * vol_mult.iloc[i]
 
-    # ── 做空系统（50% 仓位 × 波动系数，增加部分止盈）──
+    # ── 做空系统（50% 仓位 × 波动系数，部分止盈触发从2x提高到2.5x ATR）──
     ema150 = close.ewm(span=150, adjust=False).mean()
     ema150_slope = ema150 / ema150.shift(96) - 1
     
     atr_exit = atr14 * 2.5
-    atr_take_profit = atr14 * 2.0  # 止盈触发：价格有利移动2x ATR
+    atr_take_profit = atr14 * 2.5  # 从2.0x ATR提高到2.5x ATR
 
     short_signal = pd.Series(0.0, index=candles.index)
     in_short = False
@@ -103,7 +103,7 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
                 half_closed = False
                 short_signal.iloc[i] = -0.50 * vol_mult.iloc[i]
         else:
-            # 检查是否触发部分止盈（价格有利移动2x ATR）
+            # 检查是否触发部分止盈（价格有利移动2.5x ATR）
             if not half_closed and close.iloc[i] <= entry_price - atr_take_profit.iloc[i]:
                 # 平掉50%仓位
                 short_signal.iloc[i] = -0.25 * vol_mult.iloc[i]
