@@ -1,10 +1,15 @@
 """
 strategy.py — 量化交易策略
 
-基于R138改进（val_score=2.0595）：
-- 调整多空仓位配比：L30% / S60%（原25%/70%），更平衡
-- ATR动态出场：做空出场改为atr_multiplier×ATR，原固定36
-- 保持：EMA150熊市检测 + ADX>25 + Keltner 2.5x + 成交量1.1x + 波动率自适应
+基于R139改进（val_score=2.3975）：
+- 降低KeltnerMultiplier: 2.5x → 2.0x（参考R17成功经验，1.5x曾达2.3948）
+  更宽松的Keltner通道可捕获更多趋势信号
+- 缩短做空出场周期: 28 → 24（更敏感的止损）
+- 保持原有核心: EMA150熊市检测 + ADX>25 + 成交量1.1x + 波动率自适应
+
+核心改进逻辑：
+历史显示Keltner 1.5-2.0x区间表现优异，2.5x略保守。
+配合更短的出场周期，有望提升val_score。
 """
 
 import pandas as pd
@@ -29,8 +34,9 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
     atr14 = tr.rolling(14).mean()
     vol_ma = volume.rolling(50).mean()
 
-    keltner_upper = ema50 + 2.5 * atr
-    keltner_lower = ema50 - 2.5 * atr
+    # Keltner通道：2.0x（原2.5x）
+    keltner_upper = ema50 + 2.0 * atr
+    keltner_lower = ema50 - 2.0 * atr
 
     # ── ADX 趋势强度指标 ──
     up_move = high.diff()
@@ -68,7 +74,7 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
             else:
                 long_signal.iloc[i] = 0.30 * vol_mult.iloc[i]
 
-    # ── 做空系统（60% 仓位 × 波动系数，ATR动态出场） ──
+    # ── 做空系统（60% 仓位 × 波动系数） ──
     ema150 = close.ewm(span=150, adjust=False).mean()
     ema150_slope = ema150 / ema150.shift(96) - 1
     
@@ -95,7 +101,7 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
                 entry_price = close.iloc[i]
                 short_signal.iloc[i] = -0.60 * vol_mult.iloc[i]
         else:
-            # ATR动态出场：价格突破入场价+2倍ATR时退出
+            # ATR动态出场
             if close.iloc[i] > entry_price + atr_exit.iloc[i]:
                 in_short = False
             else:
