@@ -1,12 +1,10 @@
 """
-改进策略：降低做空仓位+优化ATR出场
+改进策略：扩大Keltner通道倍数
 
-基于R194(val_score=3.0655)改进：
-1. 做空仓位从60%降低到50%：减少极端行情回撤，提高夏普比率稳定性
-2. ATR出场倍数从2.8x微调到2.5x：更早获利了结，提升资金效率
-3. 保持做多35%仓位和ADX>25阈值不变
-4. 理由：验证集显示趋势行情，但做空系统仓位略重，适当降低仓位可以
-   在保持收益的同时降低回撤，从而提升Sharpe Ratio
+基于R195(val_score=3.0773)改进：
+1. Keltner通道倍数从2.5x扩大到3.0x
+2. 理由：更宽的通道可以过滤假突破信号，只在价格真正突破宽幅通道时入场
+3. 保持做多35%和做空50%仓位不变
 """
 
 import pandas as pd
@@ -31,8 +29,8 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
     atr14 = tr.rolling(14).mean()
     vol_ma = volume.rolling(50).mean()
 
-    keltner_upper = ema50 + 2.5 * atr
-    keltner_lower = ema50 - 2.5 * atr
+    keltner_upper = ema50 + 3.0 * atr  # 从2.5x改为3.0x
+    keltner_lower = ema50 - 3.0 * atr  # 从2.5x改为3.0x
 
     # ── ADX 趋势强度指标 ──
     up_move = high.diff()
@@ -78,7 +76,7 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
     ema150 = close.ewm(span=150, adjust=False).mean()
     ema150_slope = ema150 / ema150.shift(96) - 1
     
-    atr_exit = atr14 * 2.5  # 从2.8x降低到2.5x
+    atr_exit = atr14 * 2.5
 
     short_signal = pd.Series(0.0, index=candles.index)
     in_short = False
@@ -98,7 +96,7 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
                     and volume.iloc[i] > 1.1 * vol_ma.iloc[i]):
                 in_short = True
                 entry_price = close.iloc[i]
-                short_signal.iloc[i] = -0.50 * vol_mult.iloc[i]  # 从-0.60降低到-0.50
+                short_signal.iloc[i] = -0.50 * vol_mult.iloc[i]
         else:
             if close.iloc[i] > entry_price + atr_exit.iloc[i]:
                 in_short = False
