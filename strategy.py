@@ -1,9 +1,10 @@
 """
 strategy.py — 量化交易策略
 
-基于R141改进（val_score=2.3985）：
-- 做空ATR动态出场乘数：2.0 → 2.5（减少假突破，提高信号质量）
-- 保持核心组合：L30%/S70% + EMA150熊市检测 + ADX>25 + Keltner 2.5x + 成交量1.1x + 波动率自适应
+基于R138改进（val_score=2.0595）：
+- 调整多空仓位配比：L30% / S70%（原30%/60%），进一步提高做空比例
+- ATR动态出场：做空出场改为atr_multiplier×ATR，原固定36
+- 保持：EMA150熊市检测 + ADX>25 + Keltner 2.5x + 成交量1.1x + 波动率自适应
 """
 
 import pandas as pd
@@ -67,12 +68,12 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
             else:
                 long_signal.iloc[i] = 0.30 * vol_mult.iloc[i]
 
-    # ── 做空系统（70% 仓位 × 波动系数，ATR 2.5x 动态出场） ──
+    # ── 做空系统（70% 仓位 × 波动系数，ATR动态出场） ──
     ema150 = close.ewm(span=150, adjust=False).mean()
     ema150_slope = ema150 / ema150.shift(96) - 1
     
-    # ATR 动态出场：2.5x（相比 R141 的 2.0x）
-    atr_exit = atr14 * 2.5
+    # ATR动态出场
+    atr_exit = atr14 * 2.0
 
     short_signal = pd.Series(0.0, index=candles.index)
     in_short = False
@@ -94,7 +95,7 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
                 entry_price = close.iloc[i]
                 short_signal.iloc[i] = -0.70 * vol_mult.iloc[i]
         else:
-            # ATR 动态出场：价格突破入场价 + 2.5 倍 ATR 时退出
+            # ATR动态出场：价格突破入场价+2倍ATR时退出
             if close.iloc[i] > entry_price + atr_exit.iloc[i]:
                 in_short = False
             else:
