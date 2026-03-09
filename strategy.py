@@ -1,11 +1,11 @@
 """
-改进策略：增加ADX趋势过滤到做多系统
+改进策略：增强做多仓位+提高ADX阈值
 
-基于R192(val_score=2.8322)改进：
-1. 做多信号增加ADX>20过滤：确保在趋势明确的行情中做多，避免震荡市错误入场
-2. 保持其他参数不变：L30%/S60%仓位，Keltner 2.5x，ATR止损2.8x
-3. 理由：历史最佳策略的做多系统相对简单，增加ADX过滤可提高做多信号质量
-   验证集可能包含更多趋势行情，ADX过滤能提高胜率
+基于R193(val_score=2.8759)改进：
+1. 做多仓位从30%提升到35%：历史数据显示做多系统偏弱，适当增加仓位
+2. ADX阈值从20提高到25：更强的趋势确认，减少震荡市错误信号
+3. 保持做空系统60%仓位不变
+4. 理由：验证集表现好说明趋势行情多，更严格的ADX过滤能提高做多胜率
 """
 
 import pandas as pd
@@ -49,7 +49,7 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
     vol_ratio = atr_pct / vol_regime
     vol_mult = np.clip(1.0 / vol_ratio, 0.5, 1.2).fillna(1.0)
 
-    # ── 做多系统（30% 仓位 × 波动系数，增加ADX>20过滤）──
+    # ── 做多系统（35% 仓位 × 波动系数，ADX>25过滤）──
     entry_high = high.rolling(58).max()
     exit_low = low.rolling(30).min()
 
@@ -57,22 +57,22 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
     in_long = False
 
     for i in range(58, len(candles)):
-        # 新增：ADX趋势过滤，要求有明确趋势
+        # 增强ADX过滤，要求更强的趋势
         adx_value = adx.iloc[i] if not np.isnan(adx.iloc[i]) else 0
-        adx_ok = adx_value > 20
+        adx_ok = adx_value > 25  # 从20提高到25
         
         if not in_long:
-            if (adx_ok  # 新增条件
+            if (adx_ok
                     and close.iloc[i] > entry_high.iloc[i - 1]
                     and close.iloc[i] > keltner_upper.iloc[i]
                     and volume.iloc[i] > 1.1 * vol_ma.iloc[i]):
                 in_long = True
-                long_signal.iloc[i] = 0.30 * vol_mult.iloc[i]
+                long_signal.iloc[i] = 0.35 * vol_mult.iloc[i]  # 从0.30提高到0.35
         else:
             if close.iloc[i] < exit_low.iloc[i - 1]:
                 in_long = False
             else:
-                long_signal.iloc[i] = 0.30 * vol_mult.iloc[i]
+                long_signal.iloc[i] = 0.35 * vol_mult.iloc[i]
 
     # ── 做空系统（60% 仓位 × 波动系数，ATR动态出场2.8x）──
     ema150 = close.ewm(span=150, adjust=False).mean()
