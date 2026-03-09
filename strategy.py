@@ -1,9 +1,9 @@
 """
 strategy.py — 量化交易策略
 
-基于R166改进（val_score=2.5765）：
-- 做空ATR动态出场：2.8×ATR → 3.2×ATR，更宽的ATR出场让利润更奔跑
-- 短期EMA：50 → 40，更敏感的入场判断
+基于R138改进（val_score=2.0595）：
+- 调整做空ATR动态出场：2.5×ATR → 2.8×ATR，更宽的ATR出场让利润奔跑
+- 调整做空仓位：70% → 60%（减少过重做空风险）
 - 保持：EMA150熊市检测 + ADX>25 + Keltner 2.5x + 成交量1.1x + 波动率自适应
 """
 
@@ -18,7 +18,7 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
     volume = candles["volume"]
 
     # ── 共用指标 ──
-    ema40 = close.ewm(span=40, adjust=False).mean()
+    ema50 = close.ewm(span=50, adjust=False).mean()
     prev_close = close.shift(1)
     tr = pd.concat([
         high - low,
@@ -29,8 +29,8 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
     atr14 = tr.rolling(14).mean()
     vol_ma = volume.rolling(50).mean()
 
-    keltner_upper = ema40 + 2.5 * atr
-    keltner_lower = ema40 - 2.5 * atr
+    keltner_upper = ema50 + 2.5 * atr
+    keltner_lower = ema50 - 2.5 * atr
 
     # ── ADX 趋势强度指标 ──
     up_move = high.diff()
@@ -68,12 +68,12 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
             else:
                 long_signal.iloc[i] = 0.30 * vol_mult.iloc[i]
 
-    # ── 做空系统（60% 仓位 × 波动系数，ATR动态出场3.2×） ──
+    # ── 做空系统（60% 仓位 × 波动系数，ATR动态出场） ──
     ema150 = close.ewm(span=150, adjust=False).mean()
     ema150_slope = ema150 / ema150.shift(96) - 1
     
-    # ATR动态出场：3.2×ATR，让利润更奔跑
-    atr_exit = atr14 * 3.2
+    # ATR动态出场：2.8×ATR，让利润更奔跑
+    atr_exit = atr14 * 2.8
 
     short_signal = pd.Series(0.0, index=candles.index)
     in_short = False
@@ -95,7 +95,7 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
                 entry_price = close.iloc[i]
                 short_signal.iloc[i] = -0.60 * vol_mult.iloc[i]
         else:
-            # ATR动态出场：价格突破入场价+3.2倍ATR时退出
+            # ATR动态出场：价格突破入场价+2.8倍ATR时退出
             if close.iloc[i] > entry_price + atr_exit.iloc[i]:
                 in_short = False
             else:
