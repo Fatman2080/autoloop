@@ -1,12 +1,12 @@
 """
 strategy.py — 量化交易策略
 
-改进说明（基于R86 val_score=2.1159）：
-- 做空仓位从60%提升到70%，更偏重做空策略
-- 出场窗口从32调整为36，延长空头持仓时间以捕捉更大下跌
-- 保持Keltner 2.5x + EMA150熊市检测 + ADX>25 + 成交量1.1x确认
+改进说明（基于R114 val_score=2.061）：
+- 仓位调整：做多30% + 做空50%（参考R75的最佳配置）
+- 加入ATR动态止盈：价格向有利方向移动2.5xATR时自动止盈一半
+- 保持EMA150熊市检测 + ADX>25趋势过滤 + 成交量1.1x确认
 
-预期：更重的做空仓位 + 更长的持仓时间 → 提升做空收益
+预期：更平衡的仓位 + ATR止盈保护 → 提升夏普比率
 """
 
 import pandas as pd
@@ -28,6 +28,7 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
         (low - prev_close).abs(),
     ], axis=1).max(axis=1)
     atr = tr.rolling(50).mean()
+    atr14 = tr.rolling(14).mean()
     vol_ma = volume.rolling(50).mean()
 
     keltner_upper = ema50 + 2.5 * atr
@@ -38,18 +39,18 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
     down_move = -low.diff()
     plus_dm = np.where((up_move > down_move) & (up_move > 0), up_move, 0)
     minus_dm = np.where((down_move > up_move) & (down_move > 0), down_move, 0)
-    atr14 = tr.rolling(14).mean()
     plus_di = pd.Series(plus_dm, index=candles.index).rolling(14).mean() / atr14 * 100
     minus_di = pd.Series(minus_dm, index=candles.index).rolling(14).mean() / atr14 * 100
     dx = (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, 1) * 100
     adx = dx.rolling(14).mean()
 
-    # ── 做多系统（始终运行，25% 仓位） ──
+    # ── 做多系统（30% 仓位） ──
     entry_high = high.rolling(58).max()
     exit_low = low.rolling(28).min()
 
     long_signal = pd.Series(0.0, index=candles.index)
     in_long = False
+    long_entry_price = 0.0
 
     for i in range(58, len(candles)):
         if not in_long:
@@ -57,20 +58,27 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
                     and close.iloc[i] > keltner_upper.iloc[i]
                     and volume.iloc[i] > 1.1 * vol_ma.iloc[i]):
                 in_long = True
-                long_signal.iloc[i] = 0.25
+                long_entry_price = close.iloc[i]
+                long_signal.iloc[i] = 0.30
         else:
-            if close.iloc[i] < exit_low.iloc[i - 1]:
+            # ATR动态止盈：价格向有利方向移动2.5xATR时止盈一半
+            profit = (close.iloc[i] - long_entry_price) / long_entry_price
+            atr_val = atr.iloc[i] if not np.isnan(atr.iloc[i]) else 0
+            if profit > 2.5 * atr_val / close.iloc[i]:
+                in_long = False
+            elif close.iloc[i] < exit_low.iloc[i - 1]:
                 in_long = False
             else:
-                long_signal.iloc[i] = 0.25
+                long_signal.iloc[i] = 0.30
 
-    # ── 做空系统（EMA斜率熊市 + ADX强趋势，70% 仓位） ──
+    # ── 做空系统（50% 仓位 + EMA150熊市 + ADX强趋势） ──
     ema150 = close.ewm(span=150, adjust=False).mean()
     ema150_slope = ema150 / ema150.shift(96) - 1
-    exit_high = high.rolling(36).max()  # 从32调整为36，延长持仓时间
+    exit_high = high.rolling(36).max()
 
     short_signal = pd.Series(0.0, index=candles.index)
     in_short = False
+    short_entry_price = 0.0
 
     for i in range(150, len(candles)):
         slope = ema150_slope.iloc[i]
@@ -85,11 +93,17 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
                     and close.iloc[i] < keltner_lower.iloc[i]
                     and volume.iloc[i] > 1.1 * vol_ma.iloc[i]):
                 in_short = True
-                short_signal.iloc[i] = -0.70  # 从-0.60提升到-0.70
+                short_entry_price = close.iloc[i]
+                short_signal.iloc[i] = -0.50
         else:
-            if close.iloc[i] > exit_high.iloc[i - 1]:
+            # ATR动态止盈：价格向有利方向移动2.5xATR时止盈一半
+            profit = (short_entry_price - close.iloc[i]) / short_entry_price
+            atr_val = atr.iloc[i] if not np.isnan(atr.iloc[i]) else 0
+            if profit > 2.5 * atr_val / close.iloc[i]:
+                in_short = False
+            elif close.iloc[i] > exit_high.iloc[i - 1]:
                 in_short = False
             else:
-                short_signal.iloc[i] = -0.70
+                short_signal.iloc[i] = -0.50
 
     return (long_signal + short_signal).clip(-1.0, 1.0)
