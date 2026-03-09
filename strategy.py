@@ -1,17 +1,6 @@
 """
-strategy.py — 量化交易策略
-基于 R20 最佳策略的改进版本
-
-改进思路：
-- R29 达到 val_score 2.33，且其做空条件更宽松、入场通道更窄
-- R48 做空比例 40% 达到 val_score 2.23，训练集亏损但验证集出色
-- 核心改进：缩小做空入场通道 (52/32 vs 58/30)，放宽熊市斜率判定 (-0.03 vs -0.05)
-- 目的：增加做空系统入场机会，同时保持熊市过滤的有效性
-
-关键变化：
-1. 做空入场通道：58→52 (更敏感)
-2. 熊市斜率阈值：-0.05→-0.03 (更早识别熊市)
-3. 做空出场通道：36→32 (略收窄)
+strategy.py — AI 唯一修改的文件
+实现交易策略，输出仓位信号。
 """
 
 import pandas as pd
@@ -27,6 +16,21 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
                     long_short_ratio
 
     输出：仓位信号 Series，值在 -1.0 ~ 1.0 之间
+        - -1.0 = 满仓做空
+        -  0.0 = 空仓
+        -  1.0 = 满仓做多
+
+    规则：
+        - 只能使用当前及之前的 K 线数据（禁止未来数据）
+        - 可以使用任何技术指标、数学方法、模式识别
+        - 只允许 import pandas 和 numpy
+
+    策略：独立叠加多空系统 + EMA 斜率熊市检测 + ADX 趋势强度 (R20)
+    - 做多系统（始终运行）：Donchian(58h) + Keltner上轨(2.0x) + 成交量 → 25%
+    - 做空系统（仅熊市+强趋势）：Keltner下轨(2.0x) + 成交量 + 熊市确认 + ADX>25 → 40%
+    - 熊市判定：价格 < EMA(150) 且 EMA(150) 96h内下跌 > 5%
+    - ADX>25 过滤弱趋势做空，减少震荡市亏损交易
+    - 两系统信号独立叠加，互不干扰
     """
     close = candles["close"]
     high = candles["high"]
@@ -78,12 +82,10 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
             else:
                 long_signal.iloc[i] = 0.25
 
-    # ── 做空系统（改进版：更敏感的入场条件） ──
+    # ── 做空系统（仅在 EMA斜率熊市 + ADX强趋势 中激活，40% 仓位） ──
     ema150 = close.ewm(span=150, adjust=False).mean()
     ema150_slope = ema150 / ema150.shift(96) - 1
-    # 入场通道更窄(52)，出场通道略收窄(32)
-    entry_low = low.rolling(52).min()
-    exit_high = high.rolling(32).max()
+    exit_high = high.rolling(36).max()
 
     short_signal = pd.Series(0.0, index=candles.index)
     in_short = False
@@ -92,8 +94,7 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
         slope = ema150_slope.iloc[i]
         if np.isnan(slope):
             slope = 0.0
-        # 熊市斜率阈值放宽到 -0.03
-        bear_confirmed = close.iloc[i] < ema150.iloc[i] and slope < -0.03
+        bear_confirmed = close.iloc[i] < ema150.iloc[i] and slope < -0.05
         adx_strong = adx.iloc[i] > 25 if not np.isnan(adx.iloc[i]) else False
 
         if not in_short:
