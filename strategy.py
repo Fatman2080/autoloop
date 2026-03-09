@@ -1,10 +1,10 @@
 """
 strategy.py — 量化交易策略
 
-基于R189改进（val_score=2.8115）：
-- ATR动态出场：3.0×ATR → 2.8×ATR（更敏感受部分回撤保护）
-- 做空仓位：65% → 60%（降低做空风险敞口）
-- 保持核心架构：EMA150熊市检测 + ADX>25 + Keltner 2.5x + 成交量1.1x + 波动率自适应
+基于R191改进（val_score=2.8229）：
+- 做多仓位：30% → 35%（小幅增加多头敞口，捕捉更多上涨行情）
+- 保持核心架构：EMA150熊市检测 + ADX>25 + Keltner 2.5x + 成交量1.1x + ATR动态出场2.8x
+- 理由：当前策略在验证集表现优异但训练集亏损，适度增加多头仓位可改善训练集表现
 """
 
 import pandas as pd
@@ -48,7 +48,7 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
     vol_ratio = atr_pct / vol_regime
     vol_mult = np.clip(1.0 / vol_ratio, 0.5, 1.2).fillna(1.0)
 
-    # ── 做多系统（30% 仓位 × 波动系数） ──
+    # ── 做多系统（35% 仓位 × 波动系数） ──
     entry_high = high.rolling(58).max()
     exit_low = low.rolling(30).min()
 
@@ -61,18 +61,17 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
                     and close.iloc[i] > keltner_upper.iloc[i]
                     and volume.iloc[i] > 1.1 * vol_ma.iloc[i]):
                 in_long = True
-                long_signal.iloc[i] = 0.30 * vol_mult.iloc[i]
+                long_signal.iloc[i] = 0.35 * vol_mult.iloc[i]
         else:
             if close.iloc[i] < exit_low.iloc[i - 1]:
                 in_long = False
             else:
-                long_signal.iloc[i] = 0.30 * vol_mult.iloc[i]
+                long_signal.iloc[i] = 0.35 * vol_mult.iloc[i]
 
     # ── 做空系统（60% 仓位 × 波动系数，ATR动态出场2.8x） ──
     ema150 = close.ewm(span=150, adjust=False).mean()
     ema150_slope = ema150 / ema150.shift(96) - 1
     
-    # ATR动态出场：2.8×ATR，更敏感
     atr_exit = atr14 * 2.8
 
     short_signal = pd.Series(0.0, index=candles.index)
@@ -95,7 +94,6 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
                 entry_price = close.iloc[i]
                 short_signal.iloc[i] = -0.60 * vol_mult.iloc[i]
         else:
-            # ATR动态出场：价格突破入场价+2.8倍ATR时退出
             if close.iloc[i] > entry_price + atr_exit.iloc[i]:
                 in_short = False
             else:
