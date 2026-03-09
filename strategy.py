@@ -1,10 +1,6 @@
 """
-strategy.py — 量化交易策略
-改进方向：R20基础上升激仓位+快速出场
-- 做多：25%仓位不变
-- 做空：提升到50%仓位（之前40%）
-- 出场：做空出场从36周期缩短到24周期，更快止损
-- 保持ADX>25趋势过滤减少假信号
+strategy.py — AI 唯一修改的文件
+实现交易策略，输出仓位信号。
 """
 
 import pandas as pd
@@ -12,6 +8,30 @@ import numpy as np
 
 
 def generate_signals(candles: pd.DataFrame) -> pd.Series:
+    """
+    输入：K线数据 DataFrame，包含列：
+        价格数据：timestamp, open, high, low, close, volume
+        衍生品数据：funding_rate, open_interest,
+                    liq_long_usd, liq_short_usd, liq_total_usd,
+                    long_short_ratio
+
+    输出：仓位信号 Series，值在 -1.0 ~ 1.0 之间
+        - -1.0 = 满仓做空
+        -  0.0 = 空仓
+        -  1.0 = 满仓做多
+
+    规则：
+        - 只能使用当前及之前的 K 线数据（禁止未来数据）
+        - 可以使用任何技术指标、数学方法、模式识别
+        - 只允许 import pandas 和 numpy
+
+    策略：独立叠加多空系统 + EMA 斜率熊市检测 + ADX 趋势强度 (R20)
+    - 做多系统（始终运行）：Donchian(58h) + Keltner上轨(2.0x) + 成交量 → 25%
+    - 做空系统（仅熊市+强趋势）：Keltner下轨(2.0x) + 成交量 + 熊市确认 + ADX>25 → 40%
+    - 熊市判定：价格 < EMA(150) 且 EMA(150) 96h内下跌 > 5%
+    - ADX>25 过滤弱趋势做空，减少震荡市亏损交易
+    - 两系统信号独立叠加，互不干扰
+    """
     close = candles["close"]
     high = candles["high"]
     low = candles["low"]
@@ -62,10 +82,10 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
             else:
                 long_signal.iloc[i] = 0.25
 
-    # ── 做空系统（熊市 + ADX>25，50% 仓位，出场更快） ──
+    # ── 做空系统（仅在 EMA斜率熊市 + ADX强趋势 中激活，40% 仓位） ──
     ema150 = close.ewm(span=150, adjust=False).mean()
     ema150_slope = ema150 / ema150.shift(96) - 1
-    exit_high = high.rolling(24).max()  # 出场从36改为24，更快止损
+    exit_high = high.rolling(36).max()
 
     short_signal = pd.Series(0.0, index=candles.index)
     in_short = False
@@ -83,11 +103,11 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
                     and close.iloc[i] < keltner_lower.iloc[i]
                     and volume.iloc[i] > 1.1 * vol_ma.iloc[i]):
                 in_short = True
-                short_signal.iloc[i] = -0.5  # 仓位从0.4提升到0.5
+                short_signal.iloc[i] = -0.4
         else:
             if close.iloc[i] > exit_high.iloc[i - 1]:
                 in_short = False
             else:
-                short_signal.iloc[i] = -0.5
+                short_signal.iloc[i] = -0.4
 
     return (long_signal + short_signal).clip(-1.0, 1.0)
