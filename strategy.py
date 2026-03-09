@@ -1,12 +1,12 @@
 """
 strategy.py — 量化交易策略
 
-改进说明：
-- 基于R86配置（val_score=2.1159），将做空仓位从50%提升到60%
-- 扩大做空出场窗口从28到32，延长空头持仓时间
-- 保持Keltner 2.5x宽通道 + EMA150熊市检测 + ADX>25 + 成交量1.1x确认
+改进说明（基于R86 val_score=2.1159）：
+- 做空仓位从60%提升到70%，更偏重做空策略
+- 出场窗口从32调整为36，延长空头持仓时间以捕捉更大下跌
+- 保持Keltner 2.5x + EMA150熊市检测 + ADX>25 + 成交量1.1x确认
 
-预期：更重的做空仓位 + 更长的持仓时间 → 捕捉更大下跌趋势
+预期：更重的做空仓位 + 更长的持仓时间 → 提升做空收益
 """
 
 import pandas as pd
@@ -64,10 +64,10 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
             else:
                 long_signal.iloc[i] = 0.25
 
-    # ── 做空系统（EMA斜率熊市 + ADX强趋势，60% 仓位） ──
+    # ── 做空系统（EMA斜率熊市 + ADX强趋势，70% 仓位） ──
     ema150 = close.ewm(span=150, adjust=False).mean()
     ema150_slope = ema150 / ema150.shift(96) - 1
-    exit_high = high.rolling(32).max()  # 出场窗口从36→32
+    exit_high = high.rolling(36).max()  # 从32调整为36，延长持仓时间
 
     short_signal = pd.Series(0.0, index=candles.index)
     in_short = False
@@ -85,11 +85,11 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
                     and close.iloc[i] < keltner_lower.iloc[i]
                     and volume.iloc[i] > 1.1 * vol_ma.iloc[i]):
                 in_short = True
-                short_signal.iloc[i] = -0.60  # 从-0.50提升到-0.60
+                short_signal.iloc[i] = -0.70  # 从-0.60提升到-0.70
         else:
             if close.iloc[i] > exit_high.iloc[i - 1]:
                 in_short = False
             else:
-                short_signal.iloc[i] = -0.60
+                short_signal.iloc[i] = -0.70
 
     return (long_signal + short_signal).clip(-1.0, 1.0)
