@@ -1,13 +1,6 @@
 """
 strategy.py — AI 唯一修改的文件
 实现交易策略，输出仓位信号。
-
-改动说明:
-- 将EMA150斜率检测窗口从96h缩短到72h，使熊市判定更灵敏
-- 做空仓位从40%微调到35%，降低极端行情风险
-- 保持ADX>25趋势过滤，减少震荡市做空亏损
-
-目标: 提升val_score (Sharpe Ratio)
 """
 
 import pandas as pd
@@ -32,10 +25,10 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
         - 可以使用任何技术指标、数学方法、模式识别
         - 只允许 import pandas 和 numpy
 
-    策略：独立叠加多空系统 + EMA 斜率熊市检测 + ADX 趋势强度
+    策略：独立叠加多空系统 + EMA 斜率熊市检测 + ADX 趋势强度 (R20)
     - 做多系统（始终运行）：Donchian(58h) + Keltner上轨(2.0x) + 成交量 → 25%
-    - 做空系统（仅熊市+强趋势）：Keltner下轨(2.0x) + 成交量 + 熊市确认 + ADX>25 → 35%
-    - 熊市判定：价格 < EMA(150) 且 EMA(150) 72h内下跌 > 5% (原96h)
+    - 做空系统（仅熊市+强趋势）：Keltner下轨(2.0x) + 成交量 + 熊市确认 + ADX>25 → 40%
+    - 熊市判定：价格 < EMA(150) 且 EMA(150) 96h内下跌 > 5%
     - ADX>25 过滤弱趋势做空，减少震荡市亏损交易
     - 两系统信号独立叠加，互不干扰
     """
@@ -89,10 +82,9 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
             else:
                 long_signal.iloc[i] = 0.25
 
-    # ── 做空系统（仅在 EMA斜率熊市 + ADX强趋势 中激活，35% 仓位） ──
+    # ── 做空系统（仅在 EMA斜率熊市 + ADX强趋势 中激活，40% 仓位） ──
     ema150 = close.ewm(span=150, adjust=False).mean()
-    # 改动：将96h改为72h，缩短检测周期使熊市判定更灵敏
-    ema150_slope = ema150 / ema150.shift(72) - 1
+    ema150_slope = ema150 / ema150.shift(96) - 1
     exit_high = high.rolling(36).max()
 
     short_signal = pd.Series(0.0, index=candles.index)
@@ -111,12 +103,11 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
                     and close.iloc[i] < keltner_lower.iloc[i]
                     and volume.iloc[i] > 1.1 * vol_ma.iloc[i]):
                 in_short = True
-                # 改动：从40%降到35%
-                short_signal.iloc[i] = -0.35
+                short_signal.iloc[i] = -0.4
         else:
             if close.iloc[i] > exit_high.iloc[i - 1]:
                 in_short = False
             else:
-                short_signal.iloc[i] = -0.35
+                short_signal.iloc[i] = -0.4
 
     return (long_signal + short_signal).clip(-1.0, 1.0)
