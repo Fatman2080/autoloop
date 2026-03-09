@@ -1,11 +1,11 @@
 """
-改进策略：多空仓位调整
+改进策略：恢复做空仓位至50%
 
-基于R204(val_score=3.1891)改进：
-1. 将做多仓位从35%降低到30%，做空仓位从50%降低到45%
-2. 理由：观察历史最佳结果R204，虽然val_score最高，但训练集score为负(-0.3211)，表明可能存在过拟合
-   降低仓位可以平衡风险，提高策略的鲁棒性，同时保持多空系统的基本结构
-3. 其他参数保持不变：Keltner通道倍数3.0x，ATR出场2.5x，ADX过滤25
+基于R207(val_score=3.1921)与R195/R196对比分析：
+1. R196(L35/S45) vs R195(L35/S50): 降低做空仓位导致分数下降(3.074 vs 3.077)，说明做空仓位50%优于45%。
+2. R207(L30/S45) vs R195(L35/S50): 降低做多仓位显著提升分数(3.192 vs 3.077)，主要归功于回撤降低。
+3. 结合点：保持做多仓位30%以控制回撤，恢复做空仓位至50%以提升收益。
+4. 预期：在保持低回撤的同时，提升收益率，从而获得更高的夏普比率。
 """
 
 import pandas as pd
@@ -66,14 +66,14 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
                     and close.iloc[i] > keltner_upper.iloc[i]
                     and volume.iloc[i] > 1.1 * vol_ma.iloc[i]):
                 in_long = True
-                long_signal.iloc[i] = 0.30 * vol_mult.iloc[i]  # 从35%降低到30%
+                long_signal.iloc[i] = 0.30 * vol_mult.iloc[i]
         else:
             if close.iloc[i] < exit_low.iloc[i - 1]:
                 in_long = False
             else:
-                long_signal.iloc[i] = 0.30 * vol_mult.iloc[i]  # 从35%降低到30%
+                long_signal.iloc[i] = 0.30 * vol_mult.iloc[i]
 
-    # ── 做空系统（45% 仓位 × 波动系数，ATR动态出场2.5x）──
+    # ── 做空系统（50% 仓位 × 波动系数，ATR动态出场2.5x）──
     ema150 = close.ewm(span=150, adjust=False).mean()
     ema150_slope = ema150 / ema150.shift(96) - 1
     
@@ -97,11 +97,11 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
                     and volume.iloc[i] > 1.1 * vol_ma.iloc[i]):
                 in_short = True
                 entry_price = close.iloc[i]
-                short_signal.iloc[i] = -0.45 * vol_mult.iloc[i]  # 从50%降低到45%
+                short_signal.iloc[i] = -0.50 * vol_mult.iloc[i]  # 恢复至50%
         else:
             if close.iloc[i] > entry_price + atr_exit.iloc[i]:
                 in_short = False
             else:
-                short_signal.iloc[i] = -0.45 * vol_mult.iloc[i]  # 从50%降低到45%
+                short_signal.iloc[i] = -0.50 * vol_mult.iloc[i]  # 恢复至50%
 
     return (long_signal + short_signal).clip(-1.0, 1.0)
