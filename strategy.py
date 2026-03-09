@@ -2,12 +2,12 @@
 strategy.py — 量化交易策略
 
 改进说明：
-- 基于R86配置（val_score=2.1159），将Keltner通道宽度从2.0x扩大到2.5x
-- Keltner上轨更宽松，做空信号需要价格更低于下轨才能触发，减少假突破
+- 基于R86配置（val_score=2.1159），将Keltner通道宽度从2.5x扩大到3.0x
+- 更宽的通道让价格必须更极端才能触发信号，进一步过滤假突破
 - 保持EMA150斜率熊市检测 + ADX>25 + 成交量确认1.1x
 - 做空仓位保持在50%
 
-预期：更宽的Keltner通道可以过滤噪音，做空信号更精准
+预期：更严格的做空条件应该能在熊市中减少亏损
 """
 
 import pandas as pd
@@ -31,8 +31,8 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
     atr = tr.rolling(50).mean()
     vol_ma = volume.rolling(50).mean()
 
-    keltner_upper = ema50 + 2.5 * atr  # 宽通道2.5x
-    keltner_lower = ema50 - 2.5 * atr
+    keltner_upper = ema50 + 3.0 * atr  # 超宽通道3.0x
+    keltner_lower = ema50 - 3.0 * atr
 
     # ── ADX 趋势强度指标 ──
     up_move = high.diff()
