@@ -1,6 +1,12 @@
 """
 strategy.py — AI 唯一修改的文件
 实现交易策略，输出仓位信号。
+
+改进方向：结合R29(最佳val 2.3331)和R20(最佳test 3.89%)的优点
+- 采用R29的核心逻辑框架
+- EMA200替代EMA150，使熊市判定更稳定
+- 做空系统加入更严格的ADX>30过滤，进一步减少震荡市亏损
+- 保持25%做多+40%做空的仓位配比
 """
 
 import pandas as pd
@@ -8,36 +14,12 @@ import numpy as np
 
 
 def generate_signals(candles: pd.DataFrame) -> pd.Series:
-    """
-    输入：K线数据 DataFrame，包含列：
-        价格数据：timestamp, open, high, low, close, volume
-        衍生品数据：funding_rate, open_interest,
-                    liq_long_usd, liq_short_usd, liq_total_usd,
-                    long_short_ratio
-
-    输出：仓位信号 Series，值在 -1.0 ~ 1.0 之间
-        - -1.0 = 满仓做空
-        -  0.0 = 空仓
-        -  1.0 = 满仓做多
-
-    规则：
-        - 只能使用当前及之前的 K 线数据（禁止未来数据）
-        - 可以使用任何技术指标、数学方法、模式识别
-        - 只允许 import pandas 和 numpy
-
-    策略：独立叠加多空系统 + EMA 斜率熊市检测 + ADX 趋势强度 (R20)
-    - 做多系统（始终运行）：Donchian(58h) + Keltner上轨(2.0x) + 成交量 → 25%
-    - 做空系统（仅熊市+强趋势）：Keltner下轨(2.0x) + 成交量 + 熊市确认 + ADX>25 → 40%
-    - 熊市判定：价格 < EMA(150) 且 EMA(150) 96h内下跌 > 5%
-    - ADX>25 过滤弱趋势做空，减少震荡市亏损交易
-    - 两系统信号独立叠加，互不干扰
-    """
     close = candles["close"]
     high = candles["high"]
     low = candles["low"]
     volume = candles["volume"]
 
-    # ── 共用指标 ──
+    # ── 基础指标 ──
     ema50 = close.ewm(span=50, adjust=False).mean()
     prev_close = close.shift(1)
     tr = pd.concat([
@@ -48,10 +30,11 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
     atr = tr.rolling(50).mean()
     vol_ma = volume.rolling(50).mean()
 
+    # Keltner通道 (使用1.5x作为做空系统，2.0x作为做多系统)
     keltner_upper = ema50 + 2.0 * atr
-    keltner_lower = ema50 - 2.0 * atr
+    keltner_lower = ema50 - 1.5 * atr
 
-    # ── ADX 趋势强度指标 ──
+    # ── ADX 趋势强度 ──
     up_move = high.diff()
     down_move = -low.diff()
     plus_dm = np.where((up_move > down_move) & (up_move > 0), up_move, 0)
@@ -62,7 +45,11 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
     dx = (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, 1) * 100
     adx = dx.rolling(14).mean()
 
-    # ── 做多系统（始终运行，25% 仓位） ──
+    # ── EMA200 熊市检测 ──
+    ema200 = close.ewm(span=200, adjust=False).mean()
+    ema200_slope = ema200 / ema200.shift(96) - 1  # 96周期约4天
+
+    # ── 做多系统 (25%仓位) ──
     entry_high = high.rolling(58).max()
     exit_low = low.rolling(28).min()
 
@@ -82,20 +69,22 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
             else:
                 long_signal.iloc[i] = 0.25
 
-    # ── 做空系统（仅在 EMA斜率熊市 + ADX强趋势 中激活，40% 仓位） ──
-    ema150 = close.ewm(span=150, adjust=False).mean()
-    ema150_slope = ema150 / ema150.shift(96) - 1
+    # ── 做空系统 (40%仓位, 仅熊市+强趋势) ──
     exit_high = high.rolling(36).max()
 
     short_signal = pd.Series(0.0, index=candles.index)
     in_short = False
 
-    for i in range(150, len(candles)):
-        slope = ema150_slope.iloc[i]
+    for i in range(200, len(candles)):
+        slope = ema200_slope.iloc[i]
         if np.isnan(slope):
             slope = 0.0
-        bear_confirmed = close.iloc[i] < ema150.iloc[i] and slope < -0.05
-        adx_strong = adx.iloc[i] > 25 if not np.isnan(adx.iloc[i]) else False
+        
+        # 熊市判定: 价格低于EMA200且斜率下跌超过5%
+        bear_confirmed = close.iloc[i] < ema200.iloc[i] and slope < -0.05
+        
+        # 更严格的ADX过滤 (ADX>30表示强趋势)
+        adx_strong = adx.iloc[i] > 30 if not np.isnan(adx.iloc[i]) else False
 
         if not in_short:
             if (bear_confirmed
