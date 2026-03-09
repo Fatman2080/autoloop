@@ -2,13 +2,12 @@
 strategy.py — 量化交易策略
 
 改进说明：
-- 基于R86配置（val_score=2.1159），优化做空系统的出场条件
-- 将做空出场从固定36周期改为ATR自适应出场（2.5x ATR）
-- ATR自适应出场可以更好地适应不同波动率环境，减少在震荡市中的频繁止损
-- 保持EMA150斜率熊市检测 + ADX>25 + Keltner 2.5x + 成交量确认1.1x
+- 基于R86配置（val_score=2.1159），将Keltner通道宽度从2.0x扩大到2.5x
+- Keltner上轨更宽松，做空信号需要价格更低于下轨才能触发，减少假突破
+- 保持EMA150斜率熊市检测 + ADX>25 + 成交量确认1.1x
 - 做空仓位保持在50%
 
-预期：ATR自适应出场能提升做空系统的择时能力
+预期：更宽的Keltner通道可以过滤噪音，做空信号更精准
 """
 
 import pandas as pd
@@ -30,7 +29,6 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
         (low - prev_close).abs(),
     ], axis=1).max(axis=1)
     atr = tr.rolling(50).mean()
-    atr14 = tr.rolling(14).mean()
     vol_ma = volume.rolling(50).mean()
 
     keltner_upper = ema50 + 2.5 * atr  # 宽通道2.5x
@@ -41,6 +39,7 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
     down_move = -low.diff()
     plus_dm = np.where((up_move > down_move) & (up_move > 0), up_move, 0)
     minus_dm = np.where((down_move > up_move) & (down_move > 0), down_move, 0)
+    atr14 = tr.rolling(14).mean()
     plus_di = pd.Series(plus_dm, index=candles.index).rolling(14).mean() / atr14 * 100
     minus_di = pd.Series(minus_dm, index=candles.index).rolling(14).mean() / atr14 * 100
     dx = (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, 1) * 100
@@ -69,13 +68,10 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
     # ── 做空系统（仅在 EMA斜率熊市 + ADX强趋势 中激活，50% 仓位） ──
     ema150 = close.ewm(span=150, adjust=False).mean()
     ema150_slope = ema150 / ema150.shift(96) - 1
-    
-    # ATR自适应出场：做空止损位 = 入场价 + 2.5x ATR
-    atr_exit = atr * 2.5
+    exit_high = high.rolling(36).max()
 
     short_signal = pd.Series(0.0, index=candles.index)
     in_short = False
-    entry_price = 0.0
 
     for i in range(150, len(candles)):
         slope = ema150_slope.iloc[i]
@@ -90,12 +86,9 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
                     and close.iloc[i] < keltner_lower.iloc[i]
                     and volume.iloc[i] > 1.1 * vol_ma.iloc[i]):
                 in_short = True
-                entry_price = close.iloc[i]
                 short_signal.iloc[i] = -0.50
         else:
-            # ATR自适应出场：价格超过入场价+2.5xATR时平仓
-            exit_level = entry_price + atr_exit.iloc[i]
-            if close.iloc[i] > exit_level:
+            if close.iloc[i] > exit_high.iloc[i - 1]:
                 in_short = False
             else:
                 short_signal.iloc[i] = -0.50
