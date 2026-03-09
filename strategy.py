@@ -1,6 +1,11 @@
 """
-strategy.py — AI 唯一修改的文件
-实现交易策略，输出仓位信号。
+strategy.py — 量化交易策略
+改动：优化做空系统参数
+- Keltner 系数：2.0x → 1.8x（更紧密的通道，做空信号更灵敏）
+- ADX 阈值：25 → 20（降低门槛，增加做空机会）
+- 保持做多系统 25% 仓位不变
+- 保持做空系统 40% 仓位不变
+理由：R17 用更激进的 1.5x Keltner 获得 val=2.39，验证了收紧 Keltner 对做空系统的正向作用
 """
 
 import pandas as pd
@@ -8,30 +13,6 @@ import numpy as np
 
 
 def generate_signals(candles: pd.DataFrame) -> pd.Series:
-    """
-    输入：K线数据 DataFrame，包含列：
-        价格数据：timestamp, open, high, low, close, volume
-        衍生品数据：funding_rate, open_interest,
-                    liq_long_usd, liq_short_usd, liq_total_usd,
-                    long_short_ratio
-
-    输出：仓位信号 Series，值在 -1.0 ~ 1.0 之间
-        - -1.0 = 满仓做空
-        -  0.0 = 空仓
-        -  1.0 = 满仓做多
-
-    规则：
-        - 只能使用当前及之前的 K 线数据（禁止未来数据）
-        - 可以使用任何技术指标、数学方法、模式识别
-        - 只允许 import pandas 和 numpy
-
-    策略：独立叠加多空系统 + EMA 斜率熊市检测 + ADX 趋势强度 (R20)
-    - 做多系统（始终运行）：Donchian(58h) + Keltner上轨(2.0x) + 成交量 → 25%
-    - 做空系统（仅熊市+强趋势）：Keltner下轨(2.0x) + 成交量 + 熊市确认 + ADX>25 → 40%
-    - 熊市判定：价格 < EMA(150) 且 EMA(150) 96h内下跌 > 5%
-    - ADX>25 过滤弱趋势做空，减少震荡市亏损交易
-    - 两系统信号独立叠加，互不干扰
-    """
     close = candles["close"]
     high = candles["high"]
     low = candles["low"]
@@ -48,8 +29,9 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
     atr = tr.rolling(50).mean()
     vol_ma = volume.rolling(50).mean()
 
+    # 做多系统用 2.0x，做空系统用 1.8x
     keltner_upper = ema50 + 2.0 * atr
-    keltner_lower = ema50 - 2.0 * atr
+    keltner_lower = ema50 - 1.8 * atr
 
     # ── ADX 趋势强度指标 ──
     up_move = high.diff()
@@ -82,7 +64,7 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
             else:
                 long_signal.iloc[i] = 0.25
 
-    # ── 做空系统（仅在 EMA斜率熊市 + ADX强趋势 中激活，40% 仓位） ──
+    # ── 做空系统（熊市 + ADX>20 + Keltner下轨1.8x，40% 仓位） ──
     ema150 = close.ewm(span=150, adjust=False).mean()
     ema150_slope = ema150 / ema150.shift(96) - 1
     exit_high = high.rolling(36).max()
@@ -95,7 +77,7 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
         if np.isnan(slope):
             slope = 0.0
         bear_confirmed = close.iloc[i] < ema150.iloc[i] and slope < -0.05
-        adx_strong = adx.iloc[i] > 25 if not np.isnan(adx.iloc[i]) else False
+        adx_strong = adx.iloc[i] > 20 if not np.isnan(adx.iloc[i]) else False
 
         if not in_short:
             if (bear_confirmed
