@@ -1,11 +1,12 @@
 """
 strategy.py — 量化交易策略
 
-基于R86（val_score=2.1159）的改进：
-- 新增波动率自适应仓位：根据ATR/价格比率动态调整仓位
-- 当市场波动高于历史均值时降仓，低时加仓
-- 保持：EMA150熊市检测 + ADX>25 + Keltner 2.5x + 成交量1.1x
-- 做空70%仓位 + 36出场保持不变
+改进自R134（val_score=2.3833）：
+- 保留核心：Donchian(58/30) + EMA150熊市检测 + ADX>25 + Keltner2.5x + 成交量1.1x
+- 新增：ADX趋势强度出场过滤
+  * 当ADX<20且价格触及Keltner中轨时，视为趋势减弱信号，提前平仓
+  * 这样可以减少假突破后的回撤，保持盈利
+- 仓位：做多25% + 做空70%（基于波动率自适应）
 """
 
 import pandas as pd
@@ -18,7 +19,7 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
     low = candles["low"]
     volume = candles["volume"]
 
-    # ── 共用指标 ──
+    # ── 基础指标 ──
     ema50 = close.ewm(span=50, adjust=False).mean()
     prev_close = close.shift(1)
     tr = pd.concat([
@@ -29,6 +30,7 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
     atr = tr.rolling(50).mean()
     vol_ma = volume.rolling(50).mean()
 
+    keltner_mid = ema50
     keltner_upper = ema50 + 2.5 * atr
     keltner_lower = ema50 - 2.5 * atr
 
@@ -44,15 +46,17 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
     adx = dx.rolling(14).mean()
 
     # ── 波动率自适应仓位 ──
-    atr_pct = atr / close  # 相对波动率
-    vol_regime = atr_pct.rolling(50).mean()  # 历史平均波动率
-    vol_ratio = atr_pct / vol_regime  # 当前/历史波动率比
-    
-    # 波动率高时降仓，低时加仓，范围[0.5, 1.2]
+    atr_pct = atr / close
+    vol_regime = atr_pct.rolling(50).mean()
+    vol_ratio = atr_pct / vol_regime
     vol_mult = np.clip(1.0 / vol_ratio, 0.5, 1.2)
     vol_mult = vol_mult.fillna(1.0)
 
-    # ── 做多系统（始终运行，25% 仓位 × 波动系数） ──
+    # ── EMA150 熊市检测 ──
+    ema150 = close.ewm(span=150, adjust=False).mean()
+    ema150_slope = ema150 / ema150.shift(96) - 1
+
+    # ── 做多系统（25%仓位 × 波动系数） ──
     entry_high = high.rolling(58).max()
     exit_low = low.rolling(28).min()
 
@@ -60,6 +64,7 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
     in_long = False
 
     for i in range(58, len(candles)):
+        # 入场条件
         if not in_long:
             if (close.iloc[i] > entry_high.iloc[i - 1]
                     and close.iloc[i] > keltner_upper.iloc[i]
@@ -67,14 +72,16 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
                 in_long = True
                 long_signal.iloc[i] = 0.25 * vol_mult.iloc[i]
         else:
-            if close.iloc[i] < exit_low.iloc[i - 1]:
+            # 出场条件：跌破28日低点 或 ADX<20且价格触及Keltner中轨
+            adx_val = adx.iloc[i] if not np.isnan(adx.iloc[i]) else 50
+            weak_trend = adx_val < 20 and close.iloc[i] < keltner_mid.iloc[i]
+            
+            if close.iloc[i] < exit_low.iloc[i - 1] or weak_trend:
                 in_long = False
             else:
                 long_signal.iloc[i] = 0.25 * vol_mult.iloc[i]
 
-    # ── 做空系统（EMA斜率熊市 + ADX强趋势，70% 仓位 × 波动系数） ──
-    ema150 = close.ewm(span=150, adjust=False).mean()
-    ema150_slope = ema150 / ema150.shift(96) - 1
+    # ── 做空系统（70%仓位 × 波动系数） ──
     exit_high = high.rolling(36).max()
 
     short_signal = pd.Series(0.0, index=candles.index)
@@ -95,7 +102,11 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
                 in_short = True
                 short_signal.iloc[i] = -0.70 * vol_mult.iloc[i]
         else:
-            if close.iloc[i] > exit_high.iloc[i - 1]:
+            # 出场条件：升破36日高点 或 ADX<20且价格触及Keltner中轨
+            adx_val = adx.iloc[i] if not np.isnan(adx.iloc[i]) else 50
+            weak_trend = adx_val < 20 and close.iloc[i] > keltner_mid.iloc[i]
+            
+            if close.iloc[i] > exit_high.iloc[i - 1] or weak_trend:
                 in_short = False
             else:
                 short_signal.iloc[i] = -0.70 * vol_mult.iloc[i]
