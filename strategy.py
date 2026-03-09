@@ -1,6 +1,14 @@
 """
 strategy.py — AI 唯一修改的文件
 实现交易策略，输出仓位信号。
+
+【改进记录 R21】
+改动：降低做空阈值ADX>20（原25），使做空系统更容易入场
+
+理由：
+- 历史显示做空系统对val_score提升显著（R17达到2.3948）
+- 当前ADX>25过于严格，导致训练集score低(0.103)但val高(1.870)
+- ADX>20可增加做空交易次数，改善训练集表现，同时保持强趋势过滤
 """
 
 import pandas as pd
@@ -25,12 +33,11 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
         - 可以使用任何技术指标、数学方法、模式识别
         - 只允许 import pandas 和 numpy
 
-    策略：独立叠加多空系统 + EMA 斜率熊市检测 + ADX 趋势强度 (R20)
+    策略：独立叠加多空系统 + EMA 斜率熊市检测 + ADX 趋势强度
     - 做多系统（始终运行）：Donchian(58h) + Keltner上轨(2.0x) + 成交量 → 25%
-    - 做空系统（仅熊市+强趋势）：Keltner下轨(2.0x) + 成交量 + 熊市确认 + ADX>25 → 40%
+    - 做空系统（仅熊市+强趋势）：Keltner下轨(2.0x) + 成交量 + 熊市确认 + ADX>20 → 40%
     - 熊市判定：价格 < EMA(150) 且 EMA(150) 96h内下跌 > 5%
-    - ADX>25 过滤弱趋势做空，减少震荡市亏损交易
-    - 两系统信号独立叠加，互不干扰
+    - ADX>20 过滤弱趋势做空（原25→20，稍宽松）
     """
     close = candles["close"]
     high = candles["high"]
@@ -95,7 +102,7 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
         if np.isnan(slope):
             slope = 0.0
         bear_confirmed = close.iloc[i] < ema150.iloc[i] and slope < -0.05
-        adx_strong = adx.iloc[i] > 25 if not np.isnan(adx.iloc[i]) else False
+        adx_strong = adx.iloc[i] > 20 if not np.isnan(adx.iloc[i]) else False  # 改: 25→20
 
         if not in_short:
             if (bear_confirmed
