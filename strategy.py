@@ -2,9 +2,9 @@
 strategy.py — 量化交易策略
 
 基于R138改进（val_score=2.0595）：
-- 改用布林带标准差(std)做动态止盈代替ATR，更稳健
-- 做空仓位从60%微调至65%
-- 保持：EMA150熊市检测 + ADX>25 + Keltner 2.5x + 成交量1.1x
+- 调整做空ATR动态出场：2.5×ATR → 2.8×ATR，更宽的ATR出场让利润奔跑
+- 调整做空仓位：70% → 60%（减少过重做空风险）
+- 保持：EMA150熊市检测 + ADX>25 + Keltner 2.5x + 成交量1.1x + 波动率自适应
 """
 
 import pandas as pd
@@ -28,10 +28,7 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
     atr = tr.rolling(50).mean()
     atr14 = tr.rolling(14).mean()
     vol_ma = volume.rolling(50).mean()
-    
-    # 布林带标准差（用于动态止盈）
-    bb_std = close.rolling(50).std()
-    
+
     keltner_upper = ema50 + 2.5 * atr
     keltner_lower = ema50 - 2.5 * atr
 
@@ -71,12 +68,12 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
             else:
                 long_signal.iloc[i] = 0.30 * vol_mult.iloc[i]
 
-    # ── 做空系统（65% 仓位 × 波动系数，布林带标准差动态止盈） ──
+    # ── 做空系统（60% 仓位 × 波动系数，ATR动态出场） ──
     ema150 = close.ewm(span=150, adjust=False).mean()
     ema150_slope = ema150 / ema150.shift(96) - 1
     
-    # 布林带标准差动态止盈：2.5×std
-    std_exit = bb_std * 2.5
+    # ATR动态出场：2.8×ATR，让利润更奔跑
+    atr_exit = atr14 * 2.8
 
     short_signal = pd.Series(0.0, index=candles.index)
     in_short = False
@@ -96,12 +93,12 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
                     and volume.iloc[i] > 1.1 * vol_ma.iloc[i]):
                 in_short = True
                 entry_price = close.iloc[i]
-                short_signal.iloc[i] = -0.65 * vol_mult.iloc[i]
+                short_signal.iloc[i] = -0.60 * vol_mult.iloc[i]
         else:
-            # 布林带标准差动态止盈
-            if close.iloc[i] > entry_price + std_exit.iloc[i]:
+            # ATR动态出场：价格突破入场价+2.8倍ATR时退出
+            if close.iloc[i] > entry_price + atr_exit.iloc[i]:
                 in_short = False
             else:
-                short_signal.iloc[i] = -0.65 * vol_mult.iloc[i]
+                short_signal.iloc[i] = -0.60 * vol_mult.iloc[i]
 
     return (long_signal + short_signal).clip(-1.0, 1.0)
