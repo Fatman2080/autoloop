@@ -1,10 +1,11 @@
 """
-strategy.py — 量化交易策略
+改进策略：增加ADX趋势过滤到做多系统
 
-基于R191改进（val_score=2.8229）：
-- 做多仓位：30% → 35%（小幅增加多头敞口，捕捉更多上涨行情）
-- 保持核心架构：EMA150熊市检测 + ADX>25 + Keltner 2.5x + 成交量1.1x + ATR动态出场2.8x
-- 理由：当前策略在验证集表现优异但训练集亏损，适度增加多头仓位可改善训练集表现
+基于R192(val_score=2.8322)改进：
+1. 做多信号增加ADX>20过滤：确保在趋势明确的行情中做多，避免震荡市错误入场
+2. 保持其他参数不变：L30%/S60%仓位，Keltner 2.5x，ATR止损2.8x
+3. 理由：历史最佳策略的做多系统相对简单，增加ADX过滤可提高做多信号质量
+   验证集可能包含更多趋势行情，ADX过滤能提高胜率
 """
 
 import pandas as pd
@@ -48,7 +49,7 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
     vol_ratio = atr_pct / vol_regime
     vol_mult = np.clip(1.0 / vol_ratio, 0.5, 1.2).fillna(1.0)
 
-    # ── 做多系统（35% 仓位 × 波动系数） ──
+    # ── 做多系统（30% 仓位 × 波动系数，增加ADX>20过滤）──
     entry_high = high.rolling(58).max()
     exit_low = low.rolling(30).min()
 
@@ -56,19 +57,24 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
     in_long = False
 
     for i in range(58, len(candles)):
+        # 新增：ADX趋势过滤，要求有明确趋势
+        adx_value = adx.iloc[i] if not np.isnan(adx.iloc[i]) else 0
+        adx_ok = adx_value > 20
+        
         if not in_long:
-            if (close.iloc[i] > entry_high.iloc[i - 1]
+            if (adx_ok  # 新增条件
+                    and close.iloc[i] > entry_high.iloc[i - 1]
                     and close.iloc[i] > keltner_upper.iloc[i]
                     and volume.iloc[i] > 1.1 * vol_ma.iloc[i]):
                 in_long = True
-                long_signal.iloc[i] = 0.35 * vol_mult.iloc[i]
+                long_signal.iloc[i] = 0.30 * vol_mult.iloc[i]
         else:
             if close.iloc[i] < exit_low.iloc[i - 1]:
                 in_long = False
             else:
-                long_signal.iloc[i] = 0.35 * vol_mult.iloc[i]
+                long_signal.iloc[i] = 0.30 * vol_mult.iloc[i]
 
-    # ── 做空系统（60% 仓位 × 波动系数，ATR动态出场2.8x） ──
+    # ── 做空系统（60% 仓位 × 波动系数，ATR动态出场2.8x）──
     ema150 = close.ewm(span=150, adjust=False).mean()
     ema150_slope = ema150 / ema150.shift(96) - 1
     
