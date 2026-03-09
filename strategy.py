@@ -2,11 +2,12 @@
 strategy.py — 量化交易策略
 
 改进说明：
-- 基于 R86 配置（val_score=2.1159），将做多仓位从 25% 提升到 30%
-- 参考 R75 的成功经验：L30%/S50% 达到 val_score=2.3323
-- 保持 Keltner 通道 2.5x + EMA150 斜率熊市检测 + ADX>25 + 成交量确认 1.1x
+- 基于R86配置（val_score=2.1159），将Keltner通道宽度从2.0x扩大到2.5x
+- Keltner上轨更宽松，做空信号需要价格更低于下轨才能触发，减少假突破
+- 保持EMA150斜率熊市检测 + ADX>25 + 成交量确认1.1x
+- 做空仓位保持在50%
 
-预期：更高的做多仓位可以在牛市/震荡市中获得更多收益
+预期：更宽的Keltner通道可以过滤噪音，做空信号更精准
 """
 
 import pandas as pd
@@ -44,7 +45,7 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
     dx = (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, 1) * 100
     adx = dx.rolling(14).mean()
 
-    # ── 做多系统（始终运行，30% 仓位） ──
+    # ── 做多系统（始终运行，25% 仓位） ──
     entry_high = high.rolling(58).max()
     exit_low = low.rolling(28).min()
 
@@ -57,12 +58,12 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
                     and close.iloc[i] > keltner_upper.iloc[i]
                     and volume.iloc[i] > 1.1 * vol_ma.iloc[i]):
                 in_long = True
-                long_signal.iloc[i] = 0.30  # 提升到30%
+                long_signal.iloc[i] = 0.25
         else:
             if close.iloc[i] < exit_low.iloc[i - 1]:
                 in_long = False
             else:
-                long_signal.iloc[i] = 0.30
+                long_signal.iloc[i] = 0.25
 
     # ── 做空系统（仅在 EMA斜率熊市 + ADX强趋势 中激活，50% 仓位） ──
     ema150 = close.ewm(span=150, adjust=False).mean()
