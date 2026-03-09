@@ -1,19 +1,6 @@
 """
-strategy.py — 量化交易策略
-改进自 R20 最佳策略，核心改进：仓位配比优化 + Keltner 参数微调
-
-历史经验总结：
-1. R20 (val_score=1.870): 独立多空系统 + EMA150斜率熊市检测 + ADX>25
-2. R75: L30%/S50% → val_score=2.3323 (显著提升)
-3. R17: Keltner 1.5x → val_score=2.3948
-4. R29: 某些改进 → val_score=2.3331
-
-改进策略：
-- 做多仓位：30% (原25%)
-- 做空仓位：50% (原40%) - 更激进的做空
-- Keltner 宽度：1.8x (2.0x→1.8x，更敏感)
-- 保留 EMA150 熊市检测 + ADX>25 趋势过滤
-- 保留成交量确认 1.1x
+strategy.py — AI 唯一修改的文件
+实现交易策略，输出仓位信号。
 """
 
 import pandas as pd
@@ -22,12 +9,28 @@ import numpy as np
 
 def generate_signals(candles: pd.DataFrame) -> pd.Series:
     """
-    输入：K线数据 DataFrame
-    输出：仓位信号 Series，-1.0 ~ 1.0
-    
-    策略：独立叠加多空系统 + EMA150斜率熊市检测 + ADX>25
-    - 做多：Donchian(58h) + Keltner(1.8x) + Vol确认 → 30%
-    - 做空：Keltner(1.8x) + Vol确认 + 熊市 + ADX>25 → 50%
+    输入：K线数据 DataFrame，包含列：
+        价格数据：timestamp, open, high, low, close, volume
+        衍生品数据：funding_rate, open_interest,
+                    liq_long_usd, liq_short_usd, liq_total_usd,
+                    long_short_ratio
+
+    输出：仓位信号 Series，值在 -1.0 ~ 1.0 之间
+        - -1.0 = 满仓做空
+        -  0.0 = 空仓
+        -  1.0 = 满仓做多
+
+    规则：
+        - 只能使用当前及之前的 K 线数据（禁止未来数据）
+        - 可以使用任何技术指标、数学方法、模式识别
+        - 只允许 import pandas 和 numpy
+
+    策略：独立叠加多空系统 + EMA 斜率熊市检测 + ADX 趋势强度 (R20)
+    - 做多系统（始终运行）：Donchian(58h) + Keltner上轨(2.0x) + 成交量 → 25%
+    - 做空系统（仅熊市+强趋势）：Keltner下轨(2.0x) + 成交量 + 熊市确认 + ADX>25 → 40%
+    - 熊市判定：价格 < EMA(150) 且 EMA(150) 96h内下跌 > 5%
+    - ADX>25 过滤弱趋势做空，减少震荡市亏损交易
+    - 两系统信号独立叠加，互不干扰
     """
     close = candles["close"]
     high = candles["high"]
@@ -45,10 +48,10 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
     atr = tr.rolling(50).mean()
     vol_ma = volume.rolling(50).mean()
 
-    keltner_upper = ema50 + 1.8 * atr
-    keltner_lower = ema50 - 1.8 * atr
+    keltner_upper = ema50 + 2.0 * atr
+    keltner_lower = ema50 - 2.0 * atr
 
-    # ── ADX 趋势强度 ──
+    # ── ADX 趋势强度指标 ──
     up_move = high.diff()
     down_move = -low.diff()
     plus_dm = np.where((up_move > down_move) & (up_move > 0), up_move, 0)
@@ -59,7 +62,7 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
     dx = (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, 1) * 100
     adx = dx.rolling(14).mean()
 
-    # ── 做多系统：30% 仓位 ──
+    # ── 做多系统（始终运行，25% 仓位） ──
     entry_high = high.rolling(58).max()
     exit_low = low.rolling(28).min()
 
@@ -72,14 +75,14 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
                     and close.iloc[i] > keltner_upper.iloc[i]
                     and volume.iloc[i] > 1.1 * vol_ma.iloc[i]):
                 in_long = True
-                long_signal.iloc[i] = 0.30
+                long_signal.iloc[i] = 0.25
         else:
             if close.iloc[i] < exit_low.iloc[i - 1]:
                 in_long = False
             else:
-                long_signal.iloc[i] = 0.30
+                long_signal.iloc[i] = 0.25
 
-    # ── 做空系统：50% 仓位 (更激进) ──
+    # ── 做空系统（仅在 EMA斜率熊市 + ADX强趋势 中激活，40% 仓位） ──
     ema150 = close.ewm(span=150, adjust=False).mean()
     ema150_slope = ema150 / ema150.shift(96) - 1
     exit_high = high.rolling(36).max()
@@ -100,11 +103,11 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
                     and close.iloc[i] < keltner_lower.iloc[i]
                     and volume.iloc[i] > 1.1 * vol_ma.iloc[i]):
                 in_short = True
-                short_signal.iloc[i] = -0.50
+                short_signal.iloc[i] = -0.4
         else:
             if close.iloc[i] > exit_high.iloc[i - 1]:
                 in_short = False
             else:
-                short_signal.iloc[i] = -0.50
+                short_signal.iloc[i] = -0.4
 
     return (long_signal + short_signal).clip(-1.0, 1.0)
