@@ -1,10 +1,10 @@
 """
 strategy.py — 量化交易策略
 
-基于R138改进（val_score=2.0595）：
-- 调整做空ATR动态出场：2.5×ATR → 2.8×ATR，更宽的ATR出场让利润奔跑
-- 调整做空仓位：70% → 60%（减少过重做空风险）
-- 保持：EMA150熊市检测 + ADX>25 + Keltner 2.5x + 成交量1.1x + 波动率自适应
+基于R155改进（val_score=2.5709）：
+- EMA周期：150 → 100（提高趋势检测灵敏度）
+- ATR出场倍数：2.8 → 2.6（更紧的止损，尝试提高Sharpe）
+- 保持核心：波动率自适应 + 成交量确认 + ADX趋势过滤
 """
 
 import pandas as pd
@@ -69,21 +69,21 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
                 long_signal.iloc[i] = 0.30 * vol_mult.iloc[i]
 
     # ── 做空系统（60% 仓位 × 波动系数，ATR动态出场） ──
-    ema150 = close.ewm(span=150, adjust=False).mean()
-    ema150_slope = ema150 / ema150.shift(96) - 1
+    ema100 = close.ewm(span=100, adjust=False).mean()
+    ema100_slope = ema100 / ema100.shift(64) - 1
     
-    # ATR动态出场：2.8×ATR，让利润更奔跑
-    atr_exit = atr14 * 2.8
+    # ATR动态出场：2.6×ATR
+    atr_exit = atr14 * 2.6
 
     short_signal = pd.Series(0.0, index=candles.index)
     in_short = False
     entry_price = 0.0
 
-    for i in range(150, len(candles)):
-        slope = ema150_slope.iloc[i]
+    for i in range(100, len(candles)):
+        slope = ema100_slope.iloc[i]
         if np.isnan(slope):
             slope = 0.0
-        bear_confirmed = close.iloc[i] < ema150.iloc[i] and slope < -0.05
+        bear_confirmed = close.iloc[i] < ema100.iloc[i] and slope < -0.05
         adx_strong = adx.iloc[i] > 25 if not np.isnan(adx.iloc[i]) else False
 
         if not in_short:
@@ -95,7 +95,6 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
                 entry_price = close.iloc[i]
                 short_signal.iloc[i] = -0.60 * vol_mult.iloc[i]
         else:
-            # ATR动态出场：价格突破入场价+2.8倍ATR时退出
             if close.iloc[i] > entry_price + atr_exit.iloc[i]:
                 in_short = False
             else:
