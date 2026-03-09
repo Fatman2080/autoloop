@@ -1,13 +1,6 @@
 """
 strategy.py — AI 唯一修改的文件
 实现交易策略，输出仓位信号。
-
-改动说明（R44 → R45）：
-- 改进点：收紧 EMA150 斜率阈值 (-0.05 → -0.03)，同时增加 200EMA 双重确认
-- 理由：R20 做空系统在验证集表现优秀(train_score=0.103, val_score=1.870)，
-        但训练集表现偏弱。收紧斜率阈值可减少熊市误判，使做空信号更精准，
-        200EMA 作为二级过滤可提升趋势判断准确性
-- 预期：在保持高验证集 Sharpe 的同时，提升训练集表现
 """
 
 import pandas as pd
@@ -15,6 +8,30 @@ import numpy as np
 
 
 def generate_signals(candles: pd.DataFrame) -> pd.Series:
+    """
+    输入：K线数据 DataFrame，包含列：
+        价格数据：timestamp, open, high, low, close, volume
+        衍生品数据：funding_rate, open_interest,
+                    liq_long_usd, liq_short_usd, liq_total_usd,
+                    long_short_ratio
+
+    输出：仓位信号 Series，值在 -1.0 ~ 1.0 之间
+        - -1.0 = 满仓做空
+        -  0.0 = 空仓
+        -  1.0 = 满仓做多
+
+    规则：
+        - 只能使用当前及之前的 K 线数据（禁止未来数据）
+        - 可以使用任何技术指标、数学方法、模式识别
+        - 只允许 import pandas 和 numpy
+
+    策略：独立叠加多空系统 + EMA 斜率熊市检测 + ADX 趋势强度 (R20)
+    - 做多系统（始终运行）：Donchian(58h) + Keltner上轨(2.0x) + 成交量 → 25%
+    - 做空系统（仅熊市+强趋势）：Keltner下轨(2.0x) + 成交量 + 熊市确认 + ADX>25 → 40%
+    - 熊市判定：价格 < EMA(150) 且 EMA(150) 96h内下跌 > 5%
+    - ADX>25 过滤弱趋势做空，减少震荡市亏损交易
+    - 两系统信号独立叠加，互不干扰
+    """
     close = candles["close"]
     high = candles["high"]
     low = candles["low"]
@@ -45,12 +62,6 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
     dx = (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, 1) * 100
     adx = dx.rolling(14).mean()
 
-    # ── 改进：使用 200EMA 作为二级趋势过滤 ──
-    ema150 = close.ewm(span=150, adjust=False).mean()
-    ema200 = close.ewm(span=200, adjust=False).mean()
-    ema150_slope = ema150 / ema150.shift(96) - 1
-    ema200_slope = ema200 / ema200.shift(96) - 1
-
     # ── 做多系统（始终运行，25% 仓位） ──
     entry_high = high.rolling(58).max()
     exit_low = low.rolling(28).min()
@@ -71,24 +82,19 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
             else:
                 long_signal.iloc[i] = 0.25
 
-    # ── 改进：收紧做空条件，EMA150斜率阈值 -0.05→-0.03，加入200EMA双重确认 ──
+    # ── 做空系统（仅在 EMA斜率熊市 + ADX强趋势 中激活，40% 仓位） ──
+    ema150 = close.ewm(span=150, adjust=False).mean()
+    ema150_slope = ema150 / ema150.shift(96) - 1
     exit_high = high.rolling(36).max()
 
     short_signal = pd.Series(0.0, index=candles.index)
     in_short = False
 
-    for i in range(200, len(candles)):
-        slope150 = ema150_slope.iloc[i]
-        slope200 = ema200_slope.iloc[i]
-        if np.isnan(slope150):
-            slope150 = 0.0
-        if np.isnan(slope200):
-            slope200 = 0.0
-        
-        # 收紧斜率阈值，并加入200EMA趋势确认
-        bear_confirmed = (close.iloc[i] < ema150.iloc[i] 
-                          and slope150 < -0.03 
-                          and ema200.iloc[i] < ema200.iloc[i-20])  # 200EMA也在下跌
+    for i in range(150, len(candles)):
+        slope = ema150_slope.iloc[i]
+        if np.isnan(slope):
+            slope = 0.0
+        bear_confirmed = close.iloc[i] < ema150.iloc[i] and slope < -0.05
         adx_strong = adx.iloc[i] > 25 if not np.isnan(adx.iloc[i]) else False
 
         if not in_short:
