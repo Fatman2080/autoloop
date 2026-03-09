@@ -2,11 +2,10 @@
 strategy.py — 量化交易策略
 
 改进说明：
-- 基于R86配置（val_score=2.1159），将做空仓位从40%提升到55%
-- 在熊市确认+ADX强趋势时使用更高的做空比例，最大化空头收益
-- 保持其他参数不变：Donchian(58/28), Keltner(2.0x), EMA150斜率, ADX>25
-
-预期：更高做空比例可能在强熊市中获得更好收益
+- 参考R86高做空比例(55%)，但加入ATR动态止损替代固定Donchian出场
+- 做空出场：max(固定36周期高点, 2.0x ATR) - 更贴合波动率，减少假突破
+- 保持EMA150斜率熊市检测 + ADX>25趋势确认
+- 预期：ATR动态止损可能减少被"假突破"洗出
 """
 
 import pandas as pd
@@ -28,6 +27,7 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
         (low - prev_close).abs(),
     ], axis=1).max(axis=1)
     atr = tr.rolling(50).mean()
+    atr14 = tr.rolling(14).mean()
     vol_ma = volume.rolling(50).mean()
 
     keltner_upper = ema50 + 2.0 * atr
@@ -38,13 +38,16 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
     down_move = -low.diff()
     plus_dm = np.where((up_move > down_move) & (up_move > 0), up_move, 0)
     minus_dm = np.where((down_move > up_move) & (down_move > 0), down_move, 0)
-    atr14 = tr.rolling(14).mean()
     plus_di = pd.Series(plus_dm, index=candles.index).rolling(14).mean() / atr14 * 100
     minus_di = pd.Series(minus_dm, index=candles.index).rolling(14).mean() / atr14 * 100
     dx = (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, 1) * 100
     adx = dx.rolling(14).mean()
 
-    # ── 做多系统（始终运行，25% 仓位） ──
+    # ── EMA150 熊市检测 ──
+    ema150 = close.ewm(span=150, adjust=False).mean()
+    ema150_slope = ema150 / ema150.shift(96) - 1
+
+    # ── 做多系统（25% 仓位） ──
     entry_high = high.rolling(58).max()
     exit_low = low.rolling(28).min()
 
@@ -64,10 +67,12 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
             else:
                 long_signal.iloc[i] = 0.25
 
-    # ── 做空系统（仅在 EMA斜率熊市 + ADX强趋势 中激活，55% 仓位） ──
-    ema150 = close.ewm(span=150, adjust=False).mean()
-    ema150_slope = ema150 / ema150.shift(96) - 1
-    exit_high = high.rolling(36).max()
+    # ── 做空系统（55% 仓位 + ATR动态止损） ──
+    exit_high_fixed = high.rolling(36).max()
+    exit_high_atr = close + 2.0 * atr14  # ATR动态止损
+    
+    # 取两者的较大值作为实际止损位
+    exit_short = pd.concat([exit_high_fixed, exit_high_atr], axis=1).max(axis=1)
 
     short_signal = pd.Series(0.0, index=candles.index)
     in_short = False
@@ -87,7 +92,7 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
                 in_short = True
                 short_signal.iloc[i] = -0.55
         else:
-            if close.iloc[i] > exit_high.iloc[i - 1]:
+            if close.iloc[i] > exit_short.iloc[i - 1]:
                 in_short = False
             else:
                 short_signal.iloc[i] = -0.55
