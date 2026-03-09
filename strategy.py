@@ -1,16 +1,6 @@
 """
 strategy.py — AI 唯一修改的文件
 实现交易策略，输出仓位信号。
-
-改进说明 (R21):
-- 目标: 在低波动市场增加仓位，高波动市场减少仓位
-- 方法: 使用 ATR/close 作为波动率指标，动态调整仓位乘数
-- 保持原策略(R20)的开仓/出场逻辑不变，只调整仓位权重
-- 预期: 在震荡/低波动期获得更多收益，同时在高波动期控制回撤
-
-原策略: 独立叠加多空系统 + EMA斜率熊市检测 + ADX趋势强度
-- 做多: 25% * vol_multiplier
-- 做空: 40% * vol_multiplier (仅熊市+ADX>25)
 """
 
 import pandas as pd
@@ -18,6 +8,30 @@ import numpy as np
 
 
 def generate_signals(candles: pd.DataFrame) -> pd.Series:
+    """
+    输入：K线数据 DataFrame，包含列：
+        价格数据：timestamp, open, high, low, close, volume
+        衍生品数据：funding_rate, open_interest,
+                    liq_long_usd, liq_short_usd, liq_total_usd,
+                    long_short_ratio
+
+    输出：仓位信号 Series，值在 -1.0 ~ 1.0 之间
+        - -1.0 = 满仓做空
+        -  0.0 = 空仓
+        -  1.0 = 满仓做多
+
+    规则：
+        - 只能使用当前及之前的 K 线数据（禁止未来数据）
+        - 可以使用任何技术指标、数学方法、模式识别
+        - 只允许 import pandas 和 numpy
+
+    策略：独立叠加多空系统 + EMA 斜率熊市检测 + ADX 趋势强度 (R20)
+    - 做多系统（始终运行）：Donchian(58h) + Keltner上轨(2.0x) + 成交量 → 25%
+    - 做空系统（仅熊市+强趋势）：Keltner下轨(2.0x) + 成交量 + 熊市确认 + ADX>25 → 40%
+    - 熊市判定：价格 < EMA(150) 且 EMA(150) 96h内下跌 > 5%
+    - ADX>25 过滤弱趋势做空，减少震荡市亏损交易
+    - 两系统信号独立叠加，互不干扰
+    """
     close = candles["close"]
     high = candles["high"]
     low = candles["low"]
@@ -37,16 +51,6 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
     keltner_upper = ema50 + 2.0 * atr
     keltner_lower = ema50 - 2.0 * atr
 
-    # ── ATR波动率仓位调整因子 ──
-    # 计算ATR占价格的百分比，作为波动率指标
-    atr_pct = atr / close
-    # 波动率越低，仓位乘数越高
-    # 基准: atr_pct ≈ 0.02 (2%) 时，乘数为 1.0
-    # 范围: 0.5x ~ 2.0x
-    vol_multiplier = (0.02 / atr_pct.clip(0.005, 0.1)).clip(0.5, 2.0)
-    # 平滑处理
-    vol_multiplier = vol_multiplier.rolling(5).mean()
-
     # ── ADX 趋势强度指标 ──
     up_move = high.diff()
     down_move = -low.diff()
@@ -58,7 +62,7 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
     dx = (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, 1) * 100
     adx = dx.rolling(14).mean()
 
-    # ── 做多系统（始终运行，动态仓位） ──
+    # ── 做多系统（始终运行，25% 仓位） ──
     entry_high = high.rolling(58).max()
     exit_low = low.rolling(28).min()
 
@@ -66,22 +70,19 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
     in_long = False
 
     for i in range(58, len(candles)):
-        # 动态仓位 = 基础25% * 波动率调整因子
-        pos_size = 0.25 * vol_multiplier.iloc[i]
-        
         if not in_long:
             if (close.iloc[i] > entry_high.iloc[i - 1]
                     and close.iloc[i] > keltner_upper.iloc[i]
                     and volume.iloc[i] > 1.1 * vol_ma.iloc[i]):
                 in_long = True
-                long_signal.iloc[i] = pos_size
+                long_signal.iloc[i] = 0.25
         else:
             if close.iloc[i] < exit_low.iloc[i - 1]:
                 in_long = False
             else:
-                long_signal.iloc[i] = pos_size
+                long_signal.iloc[i] = 0.25
 
-    # ── 做空系统（仅在 EMA斜率熊市 + ADX强趋势 中激活，动态仓位） ──
+    # ── 做空系统（仅在 EMA斜率熊市 + ADX强趋势 中激活，40% 仓位） ──
     ema150 = close.ewm(span=150, adjust=False).mean()
     ema150_slope = ema150 / ema150.shift(96) - 1
     exit_high = high.rolling(36).max()
@@ -90,9 +91,6 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
     in_short = False
 
     for i in range(150, len(candles)):
-        # 动态仓位 = 基础40% * 波动率调整因子
-        pos_size = 0.40 * vol_multiplier.iloc[i]
-        
         slope = ema150_slope.iloc[i]
         if np.isnan(slope):
             slope = 0.0
@@ -105,11 +103,11 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
                     and close.iloc[i] < keltner_lower.iloc[i]
                     and volume.iloc[i] > 1.1 * vol_ma.iloc[i]):
                 in_short = True
-                short_signal.iloc[i] = -pos_size
+                short_signal.iloc[i] = -0.4
         else:
             if close.iloc[i] > exit_high.iloc[i - 1]:
                 in_short = False
             else:
-                short_signal.iloc[i] = -pos_size
+                short_signal.iloc[i] = -0.4
 
     return (long_signal + short_signal).clip(-1.0, 1.0)
