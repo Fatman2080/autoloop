@@ -1,13 +1,13 @@
 """
-改进策略：调整波动率自适应仓位的上下限
+改进策略：调整做空系统的Keltner通道系数至2.8x
 
-基于R211(val_score=3.2246)的改进：
-1. R211策略在多空系统中都使用了波动率自适应仓位调整因子vol_mult
-2. 当前vol_mult的范围为[0.5, 1.2]，计算方式为1.0/vol_ratio，其中vol_ratio=当前ATR/长期ATR均值
-3. 当市场波动率较低时(vol_ratio<1)，1.0/vol_ratio>1，但被限制在1.2以内，限制了在低波动行情中的仓位提升潜力
-4. 当市场波动率较高时(vol_ratio>2)，1.0/vol_ratio<0.5，但被限制在0.5以上，未能充分降低高风险环境下的仓位
-5. 改进：将vol_mult的范围从[0.5, 1.2]调整为[0.3, 1.5]，允许在低波动时更大胆加仓(最大1.5倍)，在高波动时更谨慎减仓(最小0.3倍)
-6. 预期：更好适应不同波动率环境，提高风险调整后收益
+基于R224(val_score=3.2788)的改进：
+1. R224在R211基础上调整了波动率自适应仓位的上下限，取得了较好效果
+2. 观察R211-R224的演进：R211使用做空Keltner系数2.5x，R204使用3.0x（做多）和2.5x（做空）
+3. R224保持了R211的参数配置，但波动率范围调整可能改变了信号质量
+4. 做空系统的Keltner系数2.5x相对严格，可能过滤掉了一些有效的做空信号
+5. 建议：将做空Keltner系数从2.5x微调至2.8x，适当放宽做空入场条件
+6. 预期：在保持风险控制的同时，捕捉更多做空机会，提高策略整体表现
 """
 
 import pandas as pd
@@ -32,9 +32,9 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
     atr14 = tr.rolling(14).mean()
     vol_ma = volume.rolling(50).mean()
 
-    # Keltner通道：做多使用3.0x，做空使用2.5x
+    # Keltner通道：做多使用3.0x，做空使用2.8x（改进点）
     keltner_upper = ema50 + 3.0 * atr
-    keltner_lower_tight = ema50 - 2.5 * atr  # 做空更严格
+    keltner_lower_tight = ema50 - 2.8 * atr  # 做空从2.5x调整到2.8x
 
     # ── ADX 趋势强度指标 ──
     up_move = high.diff()
@@ -46,11 +46,10 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
     dx = (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, 1) * 100
     adx = dx.rolling(14).mean()
 
-    # ── 波动率自适应仓位（改进点：调整范围）──
+    # ── 波动率自适应仓位（R224改进：范围[0.3, 1.5]）──
     atr_pct = atr / close
     vol_regime = atr_pct.rolling(50).mean()
     vol_ratio = atr_pct / vol_regime
-    # 改进：将范围从[0.5, 1.2]调整为[0.3, 1.5]
     vol_mult = np.clip(1.0 / vol_ratio, 0.3, 1.5).fillna(1.0)
 
     # ── 做多系统（30% 仓位 × 波动系数，ADX>25过滤）──
@@ -77,7 +76,7 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
             else:
                 long_signal.iloc[i] = 0.30 * vol_mult.iloc[i]
 
-    # ── 做空系统（50% 仓位 × 波动系数，使用更严格的Keltner 2.5x）──
+    # ── 做空系统（50% 仓位 × 波动系数，使用2.8x Keltner）──
     ema150 = close.ewm(span=150, adjust=False).mean()
     ema150_slope = ema150 / ema150.shift(96) - 1
     
@@ -97,7 +96,7 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
         if not in_short:
             if (bear_confirmed
                     and adx_strong
-                    and close.iloc[i] < keltner_lower_tight.iloc[i]  # 使用更严格的2.5x
+                    and close.iloc[i] < keltner_lower_tight.iloc[i]  # 使用2.8x
                     and volume.iloc[i] > 1.1 * vol_ma.iloc[i]):
                 in_short = True
                 entry_price = close.iloc[i]
