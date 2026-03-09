@@ -2,9 +2,9 @@
 strategy.py — 量化交易策略
 
 基于R138改进（val_score=2.0595）：
-- 调整多空仓位配比：L30% / S70%（原30%/60%），进一步提高做空比例
-- ATR动态出场：做空出场改为atr_multiplier×ATR，原固定36
-- 保持：EMA150熊市检测 + ADX>25 + Keltner 2.5x + 成交量1.1x + 波动率自适应
+- ATR动态出场倍数从2.0x提升至2.5x，给予做空仓位更大波动空间
+- 放宽做空条件：EMA150斜率阈值从-0.05调整为-0.03，允许在弱熊市中做空
+- 保持：L30%/S70%仓位 + EMA150熊市检测 + ADX>25 + Keltner 2.5x + 成交量1.1x + 波动率自适应
 """
 
 import pandas as pd
@@ -72,8 +72,8 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
     ema150 = close.ewm(span=150, adjust=False).mean()
     ema150_slope = ema150 / ema150.shift(96) - 1
     
-    # ATR动态出场
-    atr_exit = atr14 * 2.0
+    # ATR动态出场：从2.0x调整为2.5x，给予更大波动空间
+    atr_exit = atr14 * 2.5
 
     short_signal = pd.Series(0.0, index=candles.index)
     in_short = False
@@ -83,7 +83,8 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
         slope = ema150_slope.iloc[i]
         if np.isnan(slope):
             slope = 0.0
-        bear_confirmed = close.iloc[i] < ema150.iloc[i] and slope < -0.05
+        # 放宽熊市斜率阈值：从-0.05调整为-0.03，允许在弱熊市中做空
+        bear_confirmed = close.iloc[i] < ema150.iloc[i] and slope < -0.03
         adx_strong = adx.iloc[i] > 25 if not np.isnan(adx.iloc[i]) else False
 
         if not in_short:
@@ -95,7 +96,7 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
                 entry_price = close.iloc[i]
                 short_signal.iloc[i] = -0.70 * vol_mult.iloc[i]
         else:
-            # ATR动态出场：价格突破入场价+2倍ATR时退出
+            # ATR动态出场：价格突破入场价+2.5倍ATR时退出
             if close.iloc[i] > entry_price + atr_exit.iloc[i]:
                 in_short = False
             else:
