@@ -491,7 +491,11 @@ def evaluate(result: dict, strategy_lines: int = 0) -> dict:
     bh_return = (equity[-1] / initial - 1) if len(equity) > 0 else 0.0
 
     # ── 综合评分 ──
-    score = sharpe
+    # Sharpe × 收益加成：收益越高分数越高，亏损则打折
+    return_boost = 1.0 + total_return / 100.0
+    if return_boost < 0.1:
+        return_boost = 0.1
+    score = sharpe * return_boost
 
     if max_drawdown > 30:
         score *= 0.5
