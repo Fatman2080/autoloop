@@ -1,18 +1,20 @@
 """
-strategy.py — 双均线交叉 + 成交量确认 + 动态均线周期 + 均线差距过滤 + 资金费率顺势过滤
+strategy.py — 双均线交叉 + 成交量确认 + 动态均线周期 + 均线差距过滤 + 资金费率顺势过滤 + VWAP偏离动态仓位
 
-改进方向：引入成交量加权平均价(VWAP)作为辅助趋势确认指标
+改进方向：加入基于VWAP偏离度的动态仓位调整
 
 改动说明：
-1. 在原有策略基础上，添加VWAP(20周期)作为趋势确认指标
-2. 当价格在VWAP之上时，只允许做多信号；当价格在VWAP之下时，只允许做空信号
-3. 保持其他所有参数不变：均线差距阈值0.8%、ATR阈值0.025、资金费率阈值0.00003
+1. 计算价格与VWAP的偏离百分比（bias）
+2. 当价格远高于VWAP时（bias > 1%），增加做多仓位
+3. 当价格远低于VWAP时（bias < -1%），增加做空仓位
+4. 这种改进可以让策略在趋势强劲时获得更大收益，同时保持原有策略的有效性
 
 理由分析：
-- 历史最佳策略(val_score=17.4273)已经非常优秀，但可能在高波动市场中出现短暂的反趋势信号
-- VWAP是机构常用的趋势指标，能够反映资金流动方向
-- 价格相对于VWAP的位置可以过滤掉一些背离趋势的短期信号
-- 这应该能进一步提升夏普比率，同时控制回撤
+- 当前最佳策略(val_score=21.734)已经非常优秀，使用VWAP进行趋势确认
+- 但仓位是相对静态的，没有根据趋势的强劲程度动态调整
+- VWAP偏离度可以反映当前价格与平均成本的关系
+- 偏离越大，说明趋势越强/越极端，可以适当增加仓位
+- 这是一种风险可控的仓位管理方式
 """
 
 import pandas as pd
@@ -38,6 +40,10 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
     # VWAP计算 (20周期)
     typical_price = (high + low + close) / 3
     vwap = (typical_price * volume).rolling(window=20).sum() / volume.rolling(window=20).sum()
+    
+    # VWAP偏离度（新功能）
+    vwap_bias = (close - vwap) / vwap * 100  # 百分比偏离
+    
     price_above_vwap = close > vwap
     price_below_vwap = close < vwap
     
@@ -82,23 +88,31 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
     trend_up_f = trend_up.astype(float)
     trend_down_f = trend_down.astype(float)
     
+    # VWAP偏离度过滤
+    strong_up_bias = vwap_bias > 1.0  # 价格远高于VWAP
+    strong_down_bias = vwap_bias < -1.0  # 价格远低于VWAP
+    
     # 信号条件（加入VWAP过滤）
     long_cond = (signal_raw > 0) & strong_trend & volume_confirmed & price_above_vwap
     short_cond = (signal_raw < 0) & strong_trend & volume_confirmed & price_below_vwap
     
-    # 动态仓位计算：做多
+    # 动态仓位计算：做多（加入VWAP偏离度调整）
     long_base = np.full(len(close), 0.8)
     long_base = np.where(funding_bullish, long_base + 0.15, long_base)
     long_base = np.where(funding_bearish, long_base - 0.2, long_base)
     long_base = np.where(trend_up_f, np.minimum(long_base + 0.1, 1.0), long_base)
     long_base = np.where(trend_down_f, long_base - 0.15, long_base)
+    # VWAP偏离度加成：当价格远高于VWAP时增加仓位
+    long_base = np.where(strong_up_bias, np.minimum(long_base + 0.15, 1.0), long_base)
     
-    # 动态仓位计算：做空
+    # 动态仓位计算：做空（加入VWAP偏离度调整）
     short_base = np.full(len(close), -0.8)
     short_base = np.where(funding_bearish, short_base - 0.15, short_base)
     short_base = np.where(funding_bullish, short_base + 0.2, short_base)
     short_base = np.where(trend_down_f, np.maximum(short_base - 0.1, -1.0), short_base)
     short_base = np.where(trend_up_f, short_base + 0.15, short_base)
+    # VWAP偏离度加成：当价格远低于VWAP时增加仓位
+    short_base = np.where(strong_down_bias, np.maximum(short_base - 0.15, -1.0), short_base)
     
     # 合成最终信号
     final_signal = np.where(long_cond, long_base,
