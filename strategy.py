@@ -1,13 +1,14 @@
 """
-改进策略：做空仓位130% + 92%部分止盈
+改进策略：做空仓位135% + 93%部分止盈
 
-基于R290(val_score=4.0706)的改进：
-1. 当前策略：做空仓位130% + 90%部分止盈
-2. 改进：将部分止盈比例从90%提高到92%
+基于R293(val_score=4.0734)的改进：
+1. 当前策略：做空仓位130% + 92%部分止盈
+2. 改进：将做空仓位从130%提升到135%，部分止盈从92%提高到93%
 3. 理由：
-   - R250/R251显示部分止盈比例微调曾带来提升（3.5744→3.5747）
-   - 92%止盈可让更多利润落袋，同时保留8%仓位继续博弈
-   - 配合130%仓位，在极端行情中仍有足够暴露
+   - 历史数据显示增加做空仓位边际效益递减，但130%仍有空间
+   - R250/R251显示部分止盈微调曾带来提升(92%略优于90%)
+   - 93%止盈让更多利润落袋，保留7%仓位继续博弈
+   - 配合135%仓位，寻求多空平衡的微调改进
 """
 
 import pandas as pd
@@ -76,7 +77,7 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
             else:
                 long_signal.iloc[i] = 0.30 * vol_mult.iloc[i]
 
-    # ── 做空系统（130% 仓位 × 波动系数，92%部分止盈）──
+    # ── 做空系统（135% 仓位 × 波动系数，93%部分止盈）──
     ema150 = close.ewm(span=150, adjust=False).mean()
     ema150_slope = ema150 / ema150.shift(96) - 1
     
@@ -103,12 +104,12 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
                 in_short = True
                 entry_price = close.iloc[i]
                 partial_closed = False
-                short_signal.iloc[i] = -1.30 * vol_mult.iloc[i]
+                short_signal.iloc[i] = -1.35 * vol_mult.iloc[i]
         else:
             # 检查是否触发部分止盈（价格有利移动2.5x ATR）
             if not partial_closed and close.iloc[i] <= entry_price - atr_take_profit.iloc[i]:
-                # 平掉92%仓位，剩余8%仓位
-                short_signal.iloc[i] = -0.104 * vol_mult.iloc[i]  # 剩余8%仓位
+                # 平掉93%仓位，剩余7%仓位
+                short_signal.iloc[i] = -0.0945 * vol_mult.iloc[i]  # 剩余7%仓位
                 partial_closed = True
             elif close.iloc[i] > entry_price + atr_exit.iloc[i]:
                 # 止损出场
@@ -117,8 +118,8 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
             else:
                 # 继续持有剩余仓位
                 if partial_closed:
-                    short_signal.iloc[i] = -0.104 * vol_mult.iloc[i]  # 剩余8%仓位
+                    short_signal.iloc[i] = -0.0945 * vol_mult.iloc[i]  # 剩余7%仓位
                 else:
-                    short_signal.iloc[i] = -1.30 * vol_mult.iloc[i]
+                    short_signal.iloc[i] = -1.35 * vol_mult.iloc[i]
 
     return (long_signal + short_signal).clip(-1.0, 1.0)
