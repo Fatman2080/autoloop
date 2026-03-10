@@ -4,16 +4,17 @@ import numpy as np
 
 def generate_signals(candles: pd.DataFrame) -> pd.Series:
     """
-    改进方向：将固定的ROC动量阈值改为动态阈值，并基于动量强度调整仓位。
+    改进方向：将固定ATR阈值改为动态分位数阈值，使均线周期调整更适应市场波动性变化。
     具体改动：
-    1. 将ROC(10)改为ROC(14)以与ATR周期对齐
-    2. 计算ROC的滚动标准差，动态阈值设为ROC均值的1倍标准差
-    3. 在动量确认时，要求ROC超过动态阈值才确认信号
-    4. 在动态仓位计算中加入动量强度因子（ROC与阈值的比例）
+    1. 计算atr_pct的滚动80%分位数（窗口100），替代固定阈值0.025
+    2. 当当前atr_pct > 历史80%分位数时，视为高波动市场，使用短周期均线（10/30）
+    3. 否则使用长周期均线（20/60）
+    4. 添加分位数阈值的安全填充（NaN时用原固定阈值）
     
-    理由分析：当前最佳策略使用固定ROC阈值(±0.5%)，但在不同市场波动环境下效果不稳定。
-    动态阈值能自适应市场波动性，在强趋势中更早确认信号，在震荡市中减少假信号。
-    同时利用动量强度调整仓位，在强动量时加大仓位，弱动量时减小仓位，优化风险调整收益。
+    理由分析：当前最佳策略使用固定ATR阈值（0.025）判断市场波动状态，但在波动率
+    分布变化时可能不是最优。动态分位数阈值能自适应市场波动率的变化，在波动率
+    较高的时期更准确地切换到短周期均线，在低波动时期使用长周期均线，从而
+    更好地捕捉趋势并减少假信号。
     """
     close = candles["close"]
     high = candles["high"]
@@ -29,6 +30,10 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
     tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
     atr14 = tr.rolling(window=14).mean()
     atr_pct = atr14 / close
+    
+    # 动态ATR阈值：滚动80%分位数
+    atr_threshold = atr_pct.rolling(window=100).quantile(0.8)
+    atr_threshold = atr_threshold.fillna(0.025)  # 默认值
     
     # VWAP计算
     typical_price = (high + low + close) / 3
@@ -59,8 +64,8 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
     roc_dynamic_threshold = roc_std * 0.5  # 动态阈值设为波动率的0.5倍
     momentum_strength = (roc.abs() - roc_dynamic_threshold) / roc_dynamic_threshold  # 动量强度
     
-    # 动态均线周期
-    use_short = atr_pct > 0.025
+    # 动态均线周期（使用动态ATR分位数阈值）
+    use_short = atr_pct > atr_threshold
     ema_fast = np.where(use_short, close.ewm(span=10, adjust=False).mean(),
                         close.ewm(span=20, adjust=False).mean())
     ema_slow = np.where(use_short, close.ewm(span=30, adjust=False).mean(),
