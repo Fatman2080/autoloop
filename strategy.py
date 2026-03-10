@@ -1,9 +1,14 @@
 """
-strategy.py — 双均线交叉 + 成交量确认 + ATR动态仓位
-改进：在成交量确认基础上，加入ATR（平均真实波幅）来动态调整仓位。
-理由：当前最佳策略使用成交量确认（val_score=2.2373），但仓位固定±0.8。
-      ATR可衡量市场波动性，在高波动时降低仓位以减少回撤，在低波动时增加仓位以提高收益。
-      这样可在不增加信号复杂度的情况下，优化仓位管理，提升Sharpe和收益率。
+strategy.py — 双均线交叉 + 成交量确认 + 动态均线周期调整
+
+改进方向：基于价格波动率动态调整均线周期
+理由：历史最佳策略（val_score=2.3053）使用固定EMA20/60，但在不同市场波动下表现不稳定。
+      当市场波动率较高时，使用较短周期EMA（如10/30）能更快响应；波动率较低时，使用较长周期EMA（如20/60）更稳定。
+      通过ATR波动率指标动态切换均线周期，适应不同市场环境，提升策略适应性。
+
+改动：在ATR动态仓位基础上，根据ATR百分比调整均线周期
+      当ATR_pct > 阈值（如0.03）时，使用短周期EMA10/EMA30；否则使用原EMA20/EMA60
+      同时移除ATR仓位调整因子，保持信号纯净度
 """
 
 import pandas as pd
@@ -12,51 +17,66 @@ import numpy as np
 
 def generate_signals(candles: pd.DataFrame) -> pd.Series:
     """
-    双均线交叉 + 成交量确认 + ATR动态仓位策略
+    双均线交叉 + 成交量确认 + 动态均线周期策略
     
-    1. 计算EMA20和EMA60，金叉做多，死叉做空
-    2. 成交量确认：仅当成交量超过20日均量时执行信号
-    3. ATR动态仓位：根据ATR占价格的百分比动态调整仓位（高波动低仓位，低波动高仓位）
+    1. 计算ATR百分比衡量市场波动率
+    2. 根据波动率动态选择均线周期：高波动用EMA10/30，低波动用EMA20/60
+    3. 成交量确认：仅当成交量超过20日均量时执行信号
+    4. 保持固定仓位0.8，专注于信号质量改进
     """
     close = candles["close"]
     high = candles["high"]
     low = candles["low"]
     volume = candles["volume"]
     
-    # 计算双均线
-    ema20 = close.ewm(span=20, adjust=False).mean()
-    ema60 = close.ewm(span=60, adjust=False).mean()
-    
-    # 计算成交量20日均线
-    volume_ma20 = volume.rolling(window=20).mean()
-    
-    # 计算ATR（14日）
+    # 计算ATR（14日）和ATR百分比
     tr1 = high - low
     tr2 = (high - close.shift(1)).abs()
     tr3 = (low - close.shift(1)).abs()
     tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
     atr14 = tr.rolling(window=14).mean()
-    
-    # ATR占价格百分比（波动率）
     atr_pct = atr14 / close
     
-    # 基础信号
+    # 根据ATR百分比动态选择均线周期
+    # 高波动(ATR_pct>0.03)时使用短周期EMA10/30，低波动时使用EMA20/60
+    ema_short_fast = close.ewm(span=10, adjust=False).mean()
+    ema_short_slow = close.ewm(span=30, adjust=False).mean()
+    ema_long_fast = close.ewm(span=20, adjust=False).mean()
+    ema_long_fast = ema_long_fast.fillna(close)  # 避免NaN
+    ema_long_slow = close.ewm(span=60, adjust=False).mean()
+    
+    # 创建动态均线序列
+    ema_fast = pd.Series(index=close.index, dtype=float)
+    ema_slow = pd.Series(index=close.index, dtype=float)
+    
+    for i in range(len(close)):
+        if i >= 60:  # 确保有足够数据
+            if atr_pct.iloc[i] > 0.03:
+                ema_fast.iloc[i] = ema_short_fast.iloc[i]
+                ema_slow.iloc[i] = ema_short_slow.iloc[i]
+            else:
+                ema_fast.iloc[i] = ema_long_fast.iloc[i]
+                ema_slow.iloc[i] = ema_long_slow.iloc[i]
+        else:
+            ema_fast.iloc[i] = close.iloc[i]
+            ema_slow.iloc[i] = close.iloc[i]
+    
+    # 成交量20日均线
+    volume_ma20 = volume.rolling(window=20).mean()
+    
+    # 基础信号（金叉/死叉）
     signal = pd.Series(0.0, index=candles.index)
-    signal[ema20 > ema60] = 0.8
-    signal[ema20 < ema60] = -0.8
+    signal[ema_fast > ema_slow] = 0.8
+    signal[ema_fast < ema_slow] = -0.8
     
     # 成交量确认
     volume_confirmed = volume > volume_ma20
     
-    # 计算动态仓位因子：波动率越低仓位越高，波动率越高仓位越低
-    # ATR百分比均值约为0.02~0.05，使用0.03作为基准
-    atr_factor = np.clip(0.03 / atr_pct, 0.3, 1.5)
-    
-    # 应用成交量确认 + 动态仓位
+    # 应用成交量确认
     final_signal = pd.Series(0.0, index=candles.index)
     for i in range(1, len(candles)):
         if volume_confirmed.iloc[i]:
-            final_signal.iloc[i] = signal.iloc[i] * atr_factor.iloc[i]
+            final_signal.iloc[i] = signal.iloc[i]
         else:
             final_signal.iloc[i] = final_signal.iloc[i-1]
     
