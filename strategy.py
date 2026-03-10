@@ -1,10 +1,18 @@
 """
 strategy.py — 双均线交叉 + 成交量确认 + 动态均线周期 + 均线差距过滤 + 资金费率顺势过滤
 
-改进方向：
-1. 均线差距过滤阈值从 1.2% 降低到 0.8%，进一步放宽入场条件以捕捉更多趋势机会。
-   历史数据显示降低阈值（1.5% -> 1.2%）显著提升了收益和夏普比率。
-2. 保持 ATR 动态周期阈值 0.025 和资金费率阈值 0.00003 不变，仅调整单一变量。
+改进方向：引入成交量加权平均价(VWAP)作为辅助趋势确认指标
+
+改动说明：
+1. 在原有策略基础上，添加VWAP(20周期)作为趋势确认指标
+2. 当价格在VWAP之上时，只允许做多信号；当价格在VWAP之下时，只允许做空信号
+3. 保持其他所有参数不变：均线差距阈值0.8%、ATR阈值0.025、资金费率阈值0.00003
+
+理由分析：
+- 历史最佳策略(val_score=17.4273)已经非常优秀，但可能在高波动市场中出现短暂的反趋势信号
+- VWAP是机构常用的趋势指标，能够反映资金流动方向
+- 价格相对于VWAP的位置可以过滤掉一些背离趋势的短期信号
+- 这应该能进一步提升夏普比率，同时控制回撤
 """
 
 import pandas as pd
@@ -26,6 +34,12 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
     tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
     atr14 = tr.rolling(window=14).mean()
     atr_pct = atr14 / close
+    
+    # VWAP计算 (20周期)
+    typical_price = (high + low + close) / 3
+    vwap = (typical_price * volume).rolling(window=20).sum() / volume.rolling(window=20).sum()
+    price_above_vwap = close > vwap
+    price_below_vwap = close < vwap
     
     # 长期趋势过滤 (EMA120 斜率)
     ema120 = close.ewm(span=120, adjust=False).mean()
@@ -55,7 +69,7 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
     signal_raw[ema_fast > ema_slow] = 0.8
     signal_raw[ema_fast < ema_slow] = -0.8
     
-    # 改进点：均线差距过滤阈值从 0.012 降到 0.008
+    # 均线差距过滤阈值
     gap_threshold = 0.008
     strong_trend = ema_diff_pct.abs() > gap_threshold
     volume_confirmed = volume > volume_ma20
@@ -68,9 +82,9 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
     trend_up_f = trend_up.astype(float)
     trend_down_f = trend_down.astype(float)
     
-    # 信号条件
-    long_cond = (signal_raw > 0) & strong_trend & volume_confirmed
-    short_cond = (signal_raw < 0) & strong_trend & volume_confirmed
+    # 信号条件（加入VWAP过滤）
+    long_cond = (signal_raw > 0) & strong_trend & volume_confirmed & price_above_vwap
+    short_cond = (signal_raw < 0) & strong_trend & volume_confirmed & price_below_vwap
     
     # 动态仓位计算：做多
     long_base = np.full(len(close), 0.8)
