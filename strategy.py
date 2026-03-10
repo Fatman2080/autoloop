@@ -3,13 +3,13 @@ import numpy as np
 
 def generate_signals(candles: pd.DataFrame) -> pd.Series:
     """
-    改进点：将做空系统的部分止盈后剩余仓位从7%降低到5%
+    改进点：将做空系统的部分止盈后剩余仓位从5%降低到4%
     
     理由：
-    1. 当前最佳策略使用93%部分止盈+7%剩余仓位继续持有
-    2. 降低剩余仓位到5%可以进一步减少风险敞口，可能提升夏普比率
-    3. 做空仓位130%较高，小幅降低剩余仓位对收益影响有限，但能改善风险调整
-    4. 历史显示做空系统优化是提升夏普的关键路径
+    1. 历史最佳策略R339(val_score=4.2705)已将剩余仓位从7%降至5%，并提升了夏普比率。
+    2. 进一步降低剩余仓位到4%可以继续减少风险敞口，可能进一步改善风险调整后的收益。
+    3. 做空仓位130%较高，小幅降低剩余仓位对预期收益影响有限，但能降低下行波动，有望提升夏普比率。
+    4. 本次只修改这一个变量，以清晰评估效果。
     """
     close = candles["close"]
     high = candles["high"]
@@ -72,7 +72,7 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
             else:
                 long_signal.iloc[i] = 0.15 * vol_mult.iloc[i]
 
-    # 做空系统（130%仓位×波动系数，95%部分止盈）
+    # 做空系统（130%仓位×波动系数，96%部分止盈，剩余4%仓位）
     ema150 = close.ewm(span=150, adjust=False).mean()
     ema150_slope = ema150 / ema150.shift(96) - 1
     
@@ -103,8 +103,8 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
         else:
             # 检查是否触发部分止盈（价格有利移动2.5x ATR）
             if not partial_closed and close.iloc[i] <= entry_price - atr_take_profit.iloc[i]:
-                # 平掉95%仓位，剩余5%仓位（改进点）
-                short_signal.iloc[i] = -0.065 * vol_mult.iloc[i]  # 剩余5%仓位（130% * 5% = 6.5%）
+                # 平掉96%仓位，剩余4%仓位（改进点：从5%降至4%）
+                short_signal.iloc[i] = -0.052 * vol_mult.iloc[i]  # 剩余4%仓位（130% * 4% = 5.2%）
                 partial_closed = True
             elif close.iloc[i] > entry_price + atr_exit.iloc[i]:
                 # 止损出场
@@ -113,7 +113,7 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
             else:
                 # 继续持有剩余仓位
                 if partial_closed:
-                    short_signal.iloc[i] = -0.065 * vol_mult.iloc[i]  # 剩余5%仓位
+                    short_signal.iloc[i] = -0.052 * vol_mult.iloc[i]  # 剩余4%仓位
                 else:
                     short_signal.iloc[i] = -1.30 * vol_mult.iloc[i]  # 130%仓位
 
