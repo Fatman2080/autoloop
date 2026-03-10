@@ -1,14 +1,14 @@
 """
-改进策略：做空仓位135% + 93%部分止盈
+改进策略：降低做多仓位至25%，保持做空系统不变
 
-基于R293(val_score=4.0734)的改进：
-1. 当前策略：做空仓位130% + 92%部分止盈
-2. 改进：将做空仓位从130%提升到135%，部分止盈从92%提高到93%
+基于当前最佳策略R294(val_score=4.0748)的改进：
+1. 当前策略：做多仓位30%，做空仓位135% + 93%部分止盈
+2. 改进：将做多仓位从30%降低到25%，做空系统参数保持不变
 3. 理由：
-   - 历史数据显示增加做空仓位边际效益递减，但130%仍有空间
-   - R250/R251显示部分止盈微调曾带来提升(92%略优于90%)
-   - 93%止盈让更多利润落袋，保留7%仓位继续博弈
-   - 配合135%仓位，寻求多空平衡的微调改进
+   - 做空仓位高达135%，已成为策略的主要收益来源，验证集夏普比率较高
+   - 降低做多仓位可以减少多空信号同时存在时的仓位冲突，使整体风险更偏向于做空方向
+   - 历史中做多仓位调整（如R199尝试40%但回滚）未显著提升，但降低仓位可能优化风险调整后收益
+   - 保持做空系统不变，只调整做多仓位，以最小化改动并观察效果
 """
 
 import pandas as pd
@@ -53,7 +53,7 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
     vol_ratio = atr_pct / vol_regime
     vol_mult = np.clip(1.0 / vol_ratio, 0.25, 2.0).fillna(1.0)
 
-    # ── 做多系统（30% 仓位 × 波动系数，ADX>25过滤）──
+    # ── 做多系统（25% 仓位 × 波动系数，ADX>25过滤）──
     entry_high = high.rolling(58).max()
     exit_low = low.rolling(30).min()
 
@@ -70,12 +70,12 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
                     and close.iloc[i] > keltner_upper.iloc[i]
                     and volume.iloc[i] > 1.1 * vol_ma.iloc[i]):
                 in_long = True
-                long_signal.iloc[i] = 0.30 * vol_mult.iloc[i]
+                long_signal.iloc[i] = 0.25 * vol_mult.iloc[i]  # 改为25%
         else:
             if close.iloc[i] < exit_low.iloc[i - 1]:
                 in_long = False
             else:
-                long_signal.iloc[i] = 0.30 * vol_mult.iloc[i]
+                long_signal.iloc[i] = 0.25 * vol_mult.iloc[i]  # 改为25%
 
     # ── 做空系统（135% 仓位 × 波动系数，93%部分止盈）──
     ema150 = close.ewm(span=150, adjust=False).mean()
