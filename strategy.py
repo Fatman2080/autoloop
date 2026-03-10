@@ -1,9 +1,9 @@
 """
-strategy.py — 改进版双均线交叉策略
-改动：在双均线交叉基础上加入成交量确认
-理由：历史最佳策略的RSI过滤失败了，但可以尝试其他确认信号。
-      成交量是价格动量的重要确认指标，金叉配合放量更可靠，死叉配合放量更可信。
-      这可以减少假信号，提高夏普比率和收益率。
+strategy.py — 双均线交叉 + 成交量确认 + ATR动态仓位
+改进：在成交量确认基础上，加入ATR（平均真实波幅）来动态调整仓位。
+理由：当前最佳策略使用成交量确认（val_score=2.2373），但仓位固定±0.8。
+      ATR可衡量市场波动性，在高波动时降低仓位以减少回撤，在低波动时增加仓位以提高收益。
+      这样可在不增加信号复杂度的情况下，优化仓位管理，提升Sharpe和收益率。
 """
 
 import pandas as pd
@@ -12,13 +12,15 @@ import numpy as np
 
 def generate_signals(candles: pd.DataFrame) -> pd.Series:
     """
-    双均线交叉 + 成交量确认策略
+    双均线交叉 + 成交量确认 + ATR动态仓位策略
     
-    1. 计算EMA20和EMA60，金叉做多，死叉做空（核心不变）
-    2. 加入成交量确认：仅当成交量超过过去20日均量时，才执行信号
-    3. 无确认时，保持前一个信号（避免频繁交易）
+    1. 计算EMA20和EMA60，金叉做多，死叉做空
+    2. 成交量确认：仅当成交量超过20日均量时执行信号
+    3. ATR动态仓位：根据ATR占价格的百分比动态调整仓位（高波动低仓位，低波动高仓位）
     """
     close = candles["close"]
+    high = candles["high"]
+    low = candles["low"]
     volume = candles["volume"]
     
     # 计算双均线
@@ -28,24 +30,36 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
     # 计算成交量20日均线
     volume_ma20 = volume.rolling(window=20).mean()
     
-    # 生成基础信号
-    signal = pd.Series(0.0, index=candles.index)
-    signal[ema20 > ema60] = 0.8  # 金叉做多
-    signal[ema20 < ema60] = -0.8 # 死叉做空
+    # 计算ATR（14日）
+    tr1 = high - low
+    tr2 = (high - close.shift(1)).abs()
+    tr3 = (low - close.shift(1)).abs()
+    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    atr14 = tr.rolling(window=14).mean()
     
-    # 成交量确认：当前成交量需超过20日均量
+    # ATR占价格百分比（波动率）
+    atr_pct = atr14 / close
+    
+    # 基础信号
+    signal = pd.Series(0.0, index=candles.index)
+    signal[ema20 > ema60] = 0.8
+    signal[ema20 < ema60] = -0.8
+    
+    # 成交量确认
     volume_confirmed = volume > volume_ma20
     
-    # 应用成交量过滤
+    # 计算动态仓位因子：波动率越低仓位越高，波动率越高仓位越低
+    # ATR百分比均值约为0.02~0.05，使用0.03作为基准
+    atr_factor = np.clip(0.03 / atr_pct, 0.3, 1.5)
+    
+    # 应用成交量确认 + 动态仓位
     final_signal = pd.Series(0.0, index=candles.index)
     for i in range(1, len(candles)):
         if volume_confirmed.iloc[i]:
-            final_signal.iloc[i] = signal.iloc[i]
+            final_signal.iloc[i] = signal.iloc[i] * atr_factor.iloc[i]
         else:
-            # 无成交量确认时，保持前一个信号
             final_signal.iloc[i] = final_signal.iloc[i-1]
     
-    # 确保首日有信号
     final_signal.iloc[0] = signal.iloc[0]
     
     return final_signal.clip(-1.0, 1.0)
