@@ -1,6 +1,8 @@
-*.pyc
-__pycache__/
-.venv/
-data/
-run.log
+runner.py
+REPORT.md
 .env
+__pycache__/
+*.pyc
+data/
+.venv/
+*.log
