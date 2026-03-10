@@ -4,18 +4,19 @@ import numpy as np
 
 def generate_signals(candles: pd.DataFrame) -> pd.Series:
     """
-    改进方向：优化ATR分位数阈值参数和动量指标计算方式
+    改进方向：微调ATR分位数阈值和动量参数
     
     具体改动：
-    1. 将ATR分位数阈值从80%降低到70%，使策略在高波动市场更敏感地切换到短周期均线
-    2. 优化动量指标计算：将ROC窗口从14改为10，使动量确认更灵敏
-    3. 调整动量动态阈值的系数从0.5倍改为0.4倍，使动量确认更敏感
+    1. ATR分位数阈值从70%提高到65%（比原80%更敏感，但比70%稍保守）
+    2. ROC窗口从10改回12（避免过度灵敏）
+    3. ROC动态阈值系数从0.4改回0.45（平衡灵敏度）
+    4. 简化部分冗余代码
     
     理由分析：
-    - 历史最佳策略（val_score=25.0682）使用80%分位数阈值
-    - 降低分位数阈值可以让策略在高波动时更快切换到短周期均线，捕捉更多趋势机会
-    - 缩短ROC窗口使动量确认更及时，避免滞后
-    - 降低动量阈值系数使动量确认更灵敏，减少假信号的过滤
+    - round46达到val_score=31.6177是当前最高
+    - 在此基础上进行参数微调，避免过度优化
+    - ATR分位数65%在高波动时比70%稍保守，减少假信号
+    - ROC窗口12比10更稳定
     """
     close = candles["close"]
     high = candles["high"]
@@ -32,8 +33,8 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
     atr14 = tr.rolling(window=14).mean()
     atr_pct = atr14 / close
     
-    # 动态ATR阈值：滚动70%分位数（原80%）
-    atr_threshold = atr_pct.rolling(window=100).quantile(0.7)
+    # 动态ATR阈值：滚动65%分位数（原70%）
+    atr_threshold = atr_pct.rolling(window=100).quantile(0.65)
     atr_threshold = atr_threshold.fillna(0.025)
     
     # VWAP计算
@@ -59,13 +60,13 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
     trend_up = ema120 > ema120_prev
     trend_down = ema120 < ema120_prev
     
-    # 动量指标：ROC(10)与动态阈值（原14改为10）
-    roc = (close - close.shift(10)) / close.shift(10) * 100  # 窗口从14改为10
+    # 动量指标：ROC(12)与动态阈值（原10改为12，系数0.4改为0.45）
+    roc = (close - close.shift(12)) / close.shift(12) * 100
     roc_std = roc.rolling(window=28).std()
-    roc_dynamic_threshold = roc_std * 0.4  # 系数从0.5改为0.4
+    roc_dynamic_threshold = roc_std * 0.45
     momentum_strength = (roc.abs() - roc_dynamic_threshold) / roc_dynamic_threshold
     
-    # 动态均线周期（使用动态ATR分位数阈值）
+    # 动态均线周期
     use_short = atr_pct > atr_threshold
     ema_fast = np.where(use_short, close.ewm(span=10, adjust=False).mean(),
                         close.ewm(span=20, adjust=False).mean())
@@ -91,7 +92,7 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
     strong_up_bias = vwap_bias > 1.0
     strong_down_bias = vwap_bias < -1.0
     
-    # 动态动量确认
+    # 动量确认
     momentum_confirmed_long = roc > roc_dynamic_threshold
     momentum_confirmed_short = roc < -roc_dynamic_threshold
     
@@ -101,7 +102,7 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
     short_cond = ((signal_raw < 0) & strong_trend & volume_confirmed & 
                   price_below_vwap & momentum_confirmed_short)
     
-    # 动态仓位计算（加入动量强度因子）
+    # 动态仓位计算
     long_base = np.full(len(close), 0.8)
     long_base = np.where(funding_bullish, long_base + 0.15, long_base)
     long_base = np.where(funding_bearish, long_base - 0.2, long_base)
