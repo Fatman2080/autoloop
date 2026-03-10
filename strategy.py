@@ -1,14 +1,13 @@
 """
-改进策略：继续降低做多仓位至20%
+改进策略：继续降低做多仓位至15%
 
-基于当前最佳策略R331(val_score=4.1638)的改进：
-1. 当前策略：做多仓位25%，做空仓位135% + 93%部分止盈
-2. 改进：将做多仓位从25%降低到20%，做空系统参数保持不变
+基于R332(val_score=4.2391)的改进：
+1. 当前策略：做多仓位20%，做空仓位135% + 93%部分止盈
+2. 改进：将做多仓位从20%降低到15%
 3. 理由：
-   - R331降低做多仓位有效，val_score提升约0.09
-   - 做空系统表现稳定，是主要收益来源
-   - 进一步降低做多仓位可减少多空信号冲突，使策略更偏向做空方向
-   - 历史数据显示做空方向风险调整收益更优
+   - 历史验证：R331(25%)→4.1638, R332(20%)→4.2391，降低做多仓位持续有效
+   - 做空系统表现稳定，是主要收益来源，不做改动
+   - 进一步降低做多仓位可减少多空信号冲突，提升整体Sharpe
 """
 
 import pandas as pd
@@ -53,7 +52,7 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
     vol_ratio = atr_pct / vol_regime
     vol_mult = np.clip(1.0 / vol_ratio, 0.25, 2.0).fillna(1.0)
 
-    # ── 做多系统（20% 仓位 × 波动系数，ADX>25过滤）──
+    # ── 做多系统（15% 仓位 × 波动系数，ADX>25过滤）──
     entry_high = high.rolling(58).max()
     exit_low = low.rolling(30).min()
 
@@ -70,12 +69,12 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
                     and close.iloc[i] > keltner_upper.iloc[i]
                     and volume.iloc[i] > 1.1 * vol_ma.iloc[i]):
                 in_long = True
-                long_signal.iloc[i] = 0.20 * vol_mult.iloc[i]  # 改为20%
+                long_signal.iloc[i] = 0.15 * vol_mult.iloc[i]  # 改为15%
         else:
             if close.iloc[i] < exit_low.iloc[i - 1]:
                 in_long = False
             else:
-                long_signal.iloc[i] = 0.20 * vol_mult.iloc[i]  # 改为20%
+                long_signal.iloc[i] = 0.15 * vol_mult.iloc[i]  # 改为15%
 
     # ── 做空系统（135% 仓位 × 波动系数，93%部分止盈）──
     ema150 = close.ewm(span=150, adjust=False).mean()
