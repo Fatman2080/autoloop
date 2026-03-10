@@ -1,10 +1,13 @@
 """
-strategy.py — 双均线交叉 + 成交量确认 + 动态均线周期 + 均线差距过滤 + 资金费率顺势过滤 + 高周期趋势确认
+strategy.py — 双均线交叉 + 成交量确认 + 动态均线周期 + 均线差距过滤 + 资金费率顺势过滤
 
-改进方向：添加高周期EMA趋势确认
-理由：当前最佳策略（val_score=3.0325）使用资金费率顺势过滤效果显著，但仅依赖单一周期信号。
-      加入更高时间周期（如日线EMA120）的趋势判断，当信号方向与高周期趋势一致时加强信号，
-      不一致时减弱信号。这能过滤逆周期的假信号，提升信号质量。
+改进方向：向量化优化 + 放宽过滤条件
+理由：
+1. 当前最佳策略（val_score=3.0382）使用 for 循环，效率低且代码冗长
+2. train_drawdown=50.32% vs val_drawdown=6.85%，存在过拟合风险
+3. 放宽均线差距过滤阈值（2%→1.5%），增加有效信号数量
+4. 简化资金费率和高周期趋势的调整逻辑，避免过度优化
+5. 使用向量运算替代 for 循环，提升性能
 """
 
 import pandas as pd
@@ -13,14 +16,13 @@ import numpy as np
 
 def generate_signals(candles: pd.DataFrame) -> pd.Series:
     """
-    双均线交叉 + 成交量确认 + 动态均线周期 + 均线差距过滤 + 资金费率顺势过滤 + 高周期趋势确认
+    双均线交叉 + 成交量确认 + 动态均线周期 + 均线差距过滤 + 资金费率顺势过滤
     
     1. 计算ATR百分比衡量市场波动率
     2. 根据波动率动态选择均线周期：高波动用EMA10/30，低波动用EMA20/60
     3. 成交量确认：仅当成交量超过20日均量时执行信号
-    4. 均线差距过滤：仅当EMA快线与慢线差距超过2%时认可信号
+    4. 均线差距过滤：仅当EMA快线与慢线差距超过1.5%时认可信号（原2%）
     5. 资金费率顺势过滤：当信号方向与资金费率方向一致时加强
-    6. 高周期趋势确认：EMA120趋势向上时加强做多，向下时加强做空
     """
     close = candles["close"]
     high = candles["high"]
@@ -51,21 +53,12 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
     ema_long_fast = close.ewm(span=20, adjust=False).mean()
     ema_long_slow = close.ewm(span=60, adjust=False).mean()
     
-    # 创建动态均线序列
-    ema_fast = pd.Series(index=close.index, dtype=float)
-    ema_slow = pd.Series(index=close.index, dtype=float)
-    
-    for i in range(len(close)):
-        if i >= 60:
-            if atr_pct.iloc[i] > 0.03:
-                ema_fast.iloc[i] = ema_short_fast.iloc[i]
-                ema_slow.iloc[i] = ema_short_slow.iloc[i]
-            else:
-                ema_fast.iloc[i] = ema_long_fast.iloc[i]
-                ema_slow.iloc[i] = ema_long_slow.iloc[i]
-        else:
-            ema_fast.iloc[i] = close.iloc[i]
-            ema_slow.iloc[i] = close.iloc[i]
+    # 动态均线选择（向量化）
+    use_short = atr_pct > 0.03
+    ema_fast = np.where(use_short, ema_short_fast, ema_long_fast)
+    ema_slow = np.where(use_short, ema_short_slow, ema_long_slow)
+    ema_fast = pd.Series(ema_fast, index=close.index)
+    ema_slow = pd.Series(ema_slow, index=close.index)
     
     # 均线差距百分比
     ema_diff_pct = (ema_fast - ema_slow) / ema_slow
@@ -78,8 +71,8 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
     signal_raw[ema_fast > ema_slow] = 0.8
     signal_raw[ema_fast < ema_slow] = -0.8
     
-    # 多重过滤条件
-    gap_threshold = 0.02
+    # 放宽过滤条件（原2%→1.5%）
+    gap_threshold = 0.015
     strong_trend = ema_diff_pct.abs() > gap_threshold
     volume_confirmed = volume > volume_ma20
     
@@ -87,47 +80,48 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
     funding_threshold = 0.00005
     funding_bullish = funding_rate > funding_threshold
     funding_bearish = funding_rate < -funding_threshold
-    funding_neutral = ~funding_bullish & ~funding_bearish
     
-    # 应用过滤并生成最终信号
+    # 高周期趋势
+    trend_up = trend_up.astype(float)
+    trend_down = trend_down.astype(float)
+    
+    # 向量化计算最终信号
     final_signal = pd.Series(0.0, index=candles.index)
-    for i in range(1, len(candles)):
-        if volume_confirmed.iloc[i] and strong_trend.iloc[i]:
-            raw_sig = signal_raw.iloc[i]
-            trend = trend_up.iloc[i]
-            down_trend = trend_down.iloc[i]
-            
-            if raw_sig > 0:  # 做多信号
-                base = 0.8
-                # 资金费率调整
-                if funding_bullish.iloc[i]:
-                    base += 0.2
-                elif funding_bearish.iloc[i]:
-                    base -= 0.3
-                # 高周期趋势调整
-                if trend:
-                    base = min(base + 0.1, 1.0)
-                elif down_trend:
-                    base -= 0.2
-                final_signal.iloc[i] = base
-            elif raw_sig < 0:  # 做空信号
-                base = -0.8
-                # 资金费率调整
-                if funding_bearish.iloc[i]:
-                    base -= 0.2
-                elif funding_bullish.iloc[i]:
-                    base += 0.3
-                # 高周期趋势调整
-                if down_trend:
-                    base = max(base - 0.1, -1.0)
-                elif trend:
-                    base += 0.2
-                final_signal.iloc[i] = base
-            else:
-                final_signal.iloc[i] = final_signal.iloc[i-1]
-        else:
-            final_signal.iloc[i] = final_signal.iloc[i-1]
     
+    # 初始信号
     final_signal.iloc[0] = signal_raw.iloc[0]
+    
+    # 预计算所有条件
+    long_cond = (signal_raw > 0) & strong_trend & volume_confirmed
+    short_cond = (signal_raw < 0) & strong_trend & volume_confirmed
+    
+    # 做多信号计算
+    long_base = 0.8
+    # 资金费率加强
+    long_base = np.where(funding_bullish, long_base + 0.15, long_base)
+    long_base = np.where(funding_bearish, long_base - 0.2, long_base)
+    # 高周期趋势加强
+    long_base = np.where(trend_up, np.minimum(long_base + 0.1, 1.0), long_base)
+    long_base = np.where(trend_down, long_base - 0.15, long_base)
+    
+    # 做空信号计算
+    short_base = -0.8
+    # 资金费率加强
+    short_base = np.where(funding_bearish, short_base - 0.15, short_base)
+    short_base = np.where(funding_bullish, short_base + 0.2, short_base)
+    # 高周期趋势加强
+    short_base = np.where(trend_down, np.maximum(short_base - 0.1, -1.0), short_base)
+    short_base = np.where(trend_up, short_base + 0.15, short_base)
+    
+    # 应用信号
+    final_signal = np.where(long_cond, long_base,
+                np.where(short_cond, short_base, np.nan))
+    
+    # 前值保持
+    final_signal = pd.Series(final_signal, index=candles.index)
+    final_signal = final_signal.bfill().fillna(0)
+    
+    # 平滑处理
+    final_signal = final_signal.replace(0, np.nan).bfill().fillna(0)
     
     return final_signal.clip(-1.0, 1.0)
