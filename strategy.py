@@ -3,13 +3,13 @@ import numpy as np
 
 def generate_signals(candles: pd.DataFrame) -> pd.Series:
     """
-    改进点：将做空仓位从130%提升到135%
+    改进点：将做空仓位从135%提升到140%
     
     理由：
-    1. 历史数据显示做空仓位提升持续有效（R275-R294从50%提升到135%）
-    2. 当前最佳策略R341使用130%做空仓位，但R294使用135%做空仓位时val_score=4.0748
-    3. R331-R333降低做多仓位后整体夏普比率显著提升，说明当前做空信号质量较高
-    4. 在做多仓位已降至15%的情况下，适度增加做空仓位可能进一步改善收益
+    1. 历史数据显示做空仓位提升持续有效（R275-R294从50%提升到135%，R348达到4.5198）
+    2. R294使用135%做空仓位val_score=4.0748，R348调整后val_score=4.5198
+    3. 逐步增加做空仓位是已被验证的有效方向，140%是合理的下一步尝试
+    4. 当前做多仓位已降至15%，增加做空仓位可进一步利用做空信号的高质量
     5. 保持其他参数不变（部分止盈96%、剩余4%、ATR 2.5x），只改做空仓位
     """
     close = candles["close"]
@@ -73,7 +73,7 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
             else:
                 long_signal.iloc[i] = 0.15 * vol_mult.iloc[i]
 
-    # 做空系统（135%仓位×波动系数，96%部分止盈，剩余4%仓位）
+    # 做空系统（140%仓位×波动系数，96%部分止盈，剩余4%仓位）
     ema150 = close.ewm(span=150, adjust=False).mean()
     ema150_slope = ema150 / ema150.shift(96) - 1
     
@@ -100,12 +100,12 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
                 in_short = True
                 entry_price = close.iloc[i]
                 partial_closed = False
-                short_signal.iloc[i] = -1.35 * vol_mult.iloc[i]  # 135%仓位
+                short_signal.iloc[i] = -1.40 * vol_mult.iloc[i]  # 140%仓位
         else:
             # 检查是否触发部分止盈（价格有利移动2.5x ATR）
             if not partial_closed and close.iloc[i] <= entry_price - atr_take_profit.iloc[i]:
                 # 平掉96%仓位，剩余4%仓位
-                short_signal.iloc[i] = -0.054 * vol_mult.iloc[i]  # 剩余4%仓位（135% * 4% = 5.4%）
+                short_signal.iloc[i] = -0.056 * vol_mult.iloc[i]  # 剩余4%仓位（140% * 4% = 5.6%）
                 partial_closed = True
             elif close.iloc[i] > entry_price + atr_exit.iloc[i]:
                 # 止损出场
@@ -114,8 +114,8 @@ def generate_signals(candles: pd.DataFrame) -> pd.Series:
             else:
                 # 继续持有剩余仓位
                 if partial_closed:
-                    short_signal.iloc[i] = -0.054 * vol_mult.iloc[i]  # 剩余4%仓位
+                    short_signal.iloc[i] = -0.056 * vol_mult.iloc[i]  # 剩余4%仓位
                 else:
-                    short_signal.iloc[i] = -1.35 * vol_mult.iloc[i]  # 135%仓位
+                    short_signal.iloc[i] = -1.40 * vol_mult.iloc[i]  # 140%仓位
 
     return (long_signal + short_signal).clip(-1.0, 1.0)
